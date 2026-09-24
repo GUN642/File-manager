@@ -99,6 +99,7 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
                     launch { snackbar.showSnackbar(e.text) }
                 }
                 is UiEvent.Open -> if (Archives.isArchive(e.node.name)) dlg = Dlg.ArchiveAction(e.node) else launcher.open(e.node)
+                is UiEvent.Install -> launcher.installApk(e.apk)
             }
         }
     }
@@ -201,6 +202,10 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
         }
     }
     vm.properties?.let { PropertiesDialog(it) { vm.properties = null } }
+    val update = vm.availableUpdate
+    if (vm.showUpdateDialog && update != null) {
+        UpdateDialog(update, onDismiss = { vm.showUpdateDialog = false }) { vm.downloadUpdate(update) }
+    }
     if (protonHint) {
         ConfirmDialog(
             title = "Cloud verbinden",

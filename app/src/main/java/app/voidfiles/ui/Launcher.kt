@@ -6,11 +6,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.Settings
 import android.widget.Toast
 import androidx.core.content.FileProvider
 import app.voidfiles.data.LocalNode
 import app.voidfiles.data.Node
 import app.voidfiles.data.SafNode
+import java.io.File
 
 /** Hands files to other apps: open, share and "send to Proton Drive". */
 class Launcher(private val context: Context) {
@@ -73,6 +75,21 @@ class Launcher(private val context: Context) {
         } catch (e: ActivityNotFoundException) {
             start(Intent.createChooser(sendIntent(nodes), "Hochladen mit"))
         }
+    }
+
+    /** Hands a downloaded update APK to the system installer. */
+    fun installApk(apk: File) {
+        if (!context.packageManager.canRequestPackageInstalls()) {
+            toast("Bitte \"Unbekannte Apps installieren\" für VOID Files erlauben und dann erneut auf Aktualisieren tippen")
+            start(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")))
+            return
+        }
+        val uri = FileProvider.getUriForFile(context, context.packageName + ".files", apk)
+        start(
+            Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, "application/vnd.android.package-archive")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+        )
     }
 
     fun openProtonApp() {

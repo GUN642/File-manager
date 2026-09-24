@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.Restore
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -32,6 +33,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -123,6 +125,9 @@ fun SettingsScreen(vm: MainViewModel, s: AppSettings, onBack: () -> Unit) {
                 vm.update { setDualPane(v) }
             }
 
+            Group("Updates")
+            UpdateSection(vm, s)
+
             Group("Über")
             Text("VOID Files ${BuildConfig.VERSION_NAME}", color = c.text, style = MaterialTheme.typography.bodyLarge)
             Spacer(Modifier.height(4.dp))
@@ -130,6 +135,78 @@ fun SettingsScreen(vm: MainViewModel, s: AppSettings, onBack: () -> Unit) {
                 "Schriften: Doto & Space Mono (SIL Open Font License). Archive: zip4j, Apache Commons Compress, junrar.",
                 color = c.textMuted, style = MaterialTheme.typography.bodyMedium,
             )
+        }
+    }
+}
+
+@Composable
+private fun UpdateSection(vm: MainViewModel, s: AppSettings) {
+    val c = VoidTheme.colors
+    LaunchedEffect(Unit) { if (vm.releases.isEmpty()) vm.checkForUpdates(manual = false) }
+    val update = vm.availableUpdate
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Installiert: ${BuildConfig.VERSION_NAME}", color = c.text, style = MaterialTheme.typography.bodyLarge)
+            vm.updateStatus?.let {
+                Text(it, color = if (update != null) c.accent else c.textMuted, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        if (vm.checkingUpdate) CircularProgressIndicator(Modifier.size(22.dp), color = c.accent, strokeWidth = 2.dp)
+    }
+    Spacer(Modifier.height(12.dp))
+    val op = vm.op
+    if (op != null && op.title.startsWith("Update")) {
+        val f = if (op.total > 0) (op.done.toFloat() / op.total).coerceIn(0f, 1f) else 0f
+        DotBar(f, Modifier.fillMaxWidth().height(10.dp), dots = 32)
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Label("${formatSize(op.done)} / ${formatSize(op.total)}", Modifier.weight(1f))
+            TextButton(onClick = { vm.cancelOp() }) { Text("ABBRECHEN", style = MaterialTheme.typography.labelLarge, color = c.accent) }
+        }
+    } else {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (update != null) {
+                Pill("Auf ${update.version} aktualisieren", selected = true, onClick = { vm.downloadUpdate(update) })
+            }
+            Pill("Nach Updates suchen", selected = update == null, onClick = { vm.checkForUpdates(manual = true) })
+        }
+    }
+    Spacer(Modifier.height(8.dp))
+    Toggle("Beim Start prüfen", "Beim Öffnen der App nach neuen Versionen suchen", s.autoUpdateCheck) { v ->
+        vm.update { setAutoUpdate(v) }
+    }
+
+    Group("Changelog")
+    if (vm.releases.isEmpty()) {
+        Text(
+            if (vm.checkingUpdate) "Wird geladen …" else "Changelog nicht verfügbar – Internetverbindung prüfen.",
+            color = c.textMuted, style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+    var expanded by remember { mutableStateOf(false) }
+    val shown = if (expanded) vm.releases else vm.releases.take(5)
+    shown.forEach { r ->
+        val installed = r.version == BuildConfig.VERSION_NAME
+        val newer = app.voidfiles.data.Updater.isNewer(r.version, BuildConfig.VERSION_NAME)
+        Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(r.version, style = headingStyle(22), color = c.text)
+                Spacer(Modifier.width(10.dp))
+                Label(r.publishedAt.take(10).split('-').reversed().joinToString("."), Modifier.weight(1f))
+                when {
+                    installed -> Label("Installiert", color = c.text)
+                    newer -> Label("Neu", color = c.accent)
+                }
+            }
+            if (r.notes.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(r.notes, color = c.textMuted, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+    if (vm.releases.size > 5) {
+        TextButton(onClick = { expanded = !expanded }) {
+            Text(if (expanded) "WENIGER" else "ALLE ${vm.releases.size} VERSIONEN", style = MaterialTheme.typography.labelLarge, color = c.accent)
         }
     }
 }

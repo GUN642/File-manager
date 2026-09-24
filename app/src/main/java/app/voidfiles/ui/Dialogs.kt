@@ -292,3 +292,26 @@ fun ConfirmDialog(title: String, text: String, confirm: String, onDismiss: () ->
         Text(text, color = VoidTheme.colors.text, modifier = Modifier.padding(top = 4.dp))
     }
 }
+
+@Composable
+fun UpdateDialog(release: app.voidfiles.data.Release, onDismiss: () -> Unit, onUpdate: () -> Unit) {
+    val c = VoidTheme.colors
+    VoidDialog("Update", onDismiss, "Aktualisieren", onUpdate, dismissText = "Später") {
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            Text(
+                "Version ${release.version} ist verfügbar (installiert: ${app.voidfiles.BuildConfig.VERSION_NAME}).",
+                color = c.text,
+            )
+            if (release.notes.isNotBlank()) {
+                Spacer(Modifier.height(14.dp))
+                Label("Neu in dieser Version")
+                Spacer(Modifier.height(6.dp))
+                Text(release.notes, color = c.textMuted, style = MaterialTheme.typography.bodyMedium)
+            }
+            if (release.apkSize > 0) {
+                Spacer(Modifier.height(10.dp))
+                Label("Download: ${formatSize(release.apkSize)}")
+            }
+        }
+    }
+}

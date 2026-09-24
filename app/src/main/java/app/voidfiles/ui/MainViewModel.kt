@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import app.voidfiles.BuildConfig
 import app.voidfiles.data.AppSettings
 import app.voidfiles.data.Archives
 import app.voidfiles.data.CloudRoot
@@ -17,11 +18,13 @@ import app.voidfiles.data.LocalNode
 import app.voidfiles.data.Node
 import app.voidfiles.data.PasswordRequired
 import app.voidfiles.data.ProgressSink
+import app.voidfiles.data.Release
 import app.voidfiles.data.SafNode
 import app.voidfiles.data.SettingsRepository
 import app.voidfiles.data.SortBy
 import app.voidfiles.data.Storage
 import app.voidfiles.data.Trash
+import app.voidfiles.data.Updater
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -29,6 +32,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -71,6 +75,7 @@ data class Properties(
 sealed interface UiEvent {
     data class Message(val text: String) : UiEvent
     data class Open(val node: Node) : UiEvent
+    data class Install(val apk: File) : UiEvent
 }
 
 const val RECENT_QUERY = "Letzte Dateien"
@@ -107,6 +112,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var opJob: Job? = null
 
+    // ------------------------------------------------------------------ updates
+    var releases by mutableStateOf<List<Release>>(emptyList())
+        private set
+    var availableUpdate by mutableStateOf<Release?>(null)
+        private set
+    var updateStatus by mutableStateOf<String?>(null)
+        private set
+    var checkingUpdate by mutableStateOf(false)
+        private set
+    var showUpdateDialog by mutableStateOf(false)
+
     init {
         viewModelScope.launch {
             var last: AppSettings? = null
@@ -123,6 +139,64 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         reload(left)
         reload(right)
+        viewModelScope.launch {
+            if (repo.settings.first().autoUpdateCheck) checkForUpdates(manual = false)
+        }
+    }
+
+    fun checkForUpdates(manual: Boolean) {
+        if (checkingUpdate) return
+        checkingUpdate = true
+        if (manual) updateStatus = "Suche nach Updates …"
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { Updater.fetchReleases() } }
+            checkingUpdate = false
+            result.onSuccess { list ->
+                releases = list
+                val newest = list.firstOrNull { it.apkUrl != null }
+                if (newest != null && Updater.isNewer(newest.version, BuildConfig.VERSION_NAME)) {
+                    availableUpdate = newest
+                    updateStatus = "Version ${newest.version} ist verfügbar"
+                    if (!manual) showUpdateDialog = true
+                } else {
+                    availableUpdate = null
+                    updateStatus = "VOID Files ist aktuell"
+                }
+            }.onFailure {
+                updateStatus = "Update-Prüfung fehlgeschlagen: ${it.message ?: "keine Verbindung"}"
+                if (manual) message(updateStatus!!)
+            }
+        }
+    }
+
+    fun downloadUpdate(release: Release) {
+        showUpdateDialog = false
+        val url = release.apkUrl ?: return message("Für diese Version gibt es keine APK")
+        if (opJob?.isActive == true) {
+            message("Es läuft bereits ein Vorgang"); return
+        }
+        val title = "Update ${release.version} wird geladen"
+        op = OpState(title, "VOID-Files-${release.version}.apk", 0, release.apkSize)
+        opJob = viewModelScope.launch(Dispatchers.IO) {
+            val self = coroutineContext.job
+            val file = File(getApplication<Application>().cacheDir, "updates/VOID-Files-${release.version}.apk")
+            var last = 0L
+            try {
+                getApplication<Application>().cacheDir.resolve("updates").listFiles()?.forEach { it.delete() }
+                Updater.download(url, file, { done, total ->
+                    val now = System.currentTimeMillis()
+                    if (now - last > 120) {
+                        last = now
+                        op = OpState(title, file.name, done, if (total > 0) total else release.apkSize)
+                    }
+                }, { !self.isActive })
+                op = null
+                events.trySend(UiEvent.Install(file))
+            } catch (e: Throwable) {
+                op = null
+                message(if (!self.isActive) "Update abgebrochen" else "Update fehlgeschlagen: ${e.message}")
+            }
+        }
     }
 
     fun message(text: String) {
@@ -423,6 +497,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun loadRecent(pane: Pane) {
         pane.searchJob?.cancel()
+        pane.search = pane.search?.copy(running = true)
         val showHidden = current.showHidden
         pane.searchJob = viewModelScope.launch(Dispatchers.IO) {
             val files = runCatching { Storage.recentFiles(getApplication(), showHidden = showHidden) }.getOrDefault(emptyList())

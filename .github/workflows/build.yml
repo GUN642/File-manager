@@ -18,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-java@v4
         with:
@@ -56,6 +58,17 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "file=out/VOID-Files-${VERSION}.apk" >> "$GITHUB_OUTPUT"
 
+      - name: Release notes from commits
+        run: |
+          PREV=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
+          RANGE="HEAD"
+          if [ -n "$PREV" ]; then RANGE="$PREV..HEAD"; fi
+          git log --no-merges --format='%b' $RANGE \
+            | grep -v -i -e '^Co-Authored-By' -e '^Claude-Session' \
+            | sed '/^[[:space:]]*$/d' > notes.md || true
+          if [ ! -s notes.md ]; then git log -1 --format='- %s' > notes.md; fi
+          cat notes.md
+
       - uses: actions/upload-artifact@v4
         with:
           name: VOID-Files-${{ steps.apk.outputs.version }}
@@ -69,8 +82,5 @@ jobs:
           target_commitish: ${{ github.sha }}
           prerelease: ${{ github.ref != 'refs/heads/main' }}
           make_latest: "true"
-          body: |
-            Automatischer Build von `${{ github.ref_name }}` (${{ github.sha }}).
-
-            **Installation:** `VOID-Files-${{ steps.apk.outputs.version }}.apk` unten herunterladen und auf dem Handy öffnen.
+          body_path: notes.md
           files: ${{ steps.apk.outputs.file }}

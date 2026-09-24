@@ -90,6 +90,7 @@ import app.voidfiles.data.Storage
 import app.voidfiles.data.ViewMode
 import app.voidfiles.ui.theme.VoidTheme
 import app.voidfiles.ui.theme.headingStyle
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -126,9 +127,21 @@ fun BrowserPane(
                 LinearProgressIndicator(Modifier.fillMaxSize(), color = c.accent, trackColor = Color.Transparent)
             }
         }
+        // Show the pull-to-refresh spinner only until the reload has finished.
+        var refreshing by remember { mutableStateOf(false) }
+        val busy = pane.loading || pane.search?.running == true
+        LaunchedEffect(refreshing, busy) {
+            if (refreshing && !busy) {
+                delay(300)
+                refreshing = false
+            }
+        }
         PullToRefreshBox(
-            isRefreshing = false,
-            onRefresh = { vm.reload(pane) },
+            isRefreshing = refreshing,
+            onRefresh = {
+                refreshing = true
+                vm.reload(pane)
+            },
             modifier = Modifier.weight(1f).fillMaxWidth(),
         ) {
             PaneContent(vm, pane, settings, compact)
