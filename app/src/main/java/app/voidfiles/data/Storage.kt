@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.StatFs
 import android.os.storage.StorageManager
+import android.provider.MediaStore
 import java.io.File
 import java.io.IOException
 
@@ -13,7 +14,6 @@ data class StorageVolumeInfo(val label: String, val root: File, val isPrimary: B
     val free: Long get() = runCatching { StatFs(root.absolutePath).availableBytes }.getOrDefault(0L)
 }
 
-data class QuickFolder(val label: String, val file: File)
 
 object Storage {
     val primaryRoot: File get() = Environment.getExternalStorageDirectory()
@@ -39,14 +39,49 @@ object Storage {
         return result
     }
 
-    fun quickFolders(): List<QuickFolder> = listOf(
-        QuickFolder("Downloads", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)),
-        QuickFolder("Kamera", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)),
-        QuickFolder("Bilder", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)),
-        QuickFolder("Dokumente", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)),
-        QuickFolder("Musik", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)),
-        QuickFolder("Videos", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)),
-    ).filter { it.file.exists() }
+    private val defaultDirs = listOf(
+        Environment.DIRECTORY_DOWNLOADS to "Downloads",
+        Environment.DIRECTORY_DCIM to "Kamera",
+        Environment.DIRECTORY_PICTURES to "Bilder",
+        Environment.DIRECTORY_DOCUMENTS to "Dokumente",
+        Environment.DIRECTORY_MUSIC to "Musik",
+        Environment.DIRECTORY_MOVIES to "Videos",
+    )
+
+    fun defaultQuickPaths(): List<String> =
+        defaultDirs.map { Environment.getExternalStoragePublicDirectory(it.first) }.filter { it.exists() }.map { it.absolutePath }
+
+    /** Friendly German name for well-known folders, otherwise the folder name. */
+    fun labelFor(path: String): String {
+        defaultDirs.firstOrNull { Environment.getExternalStoragePublicDirectory(it.first).absolutePath == path }?.let { return it.second }
+        if (path == primaryRoot.absolutePath) return "Interner Speicher"
+        return File(path).name.ifEmpty { path }
+    }
+
+    /**
+     * Most recently modified files on all volumes, newest first, via the MediaStore index
+     * (available to us because the app holds "all files" access).
+     */
+    fun recentFiles(context: Context, limit: Int = 200, showHidden: Boolean = false): List<LocalNode> {
+        val uri = MediaStore.Files.getContentUri("external")
+        val data = MediaStore.Files.FileColumns.DATA
+        val projection = arrayOf(data, MediaStore.Files.FileColumns.DATE_MODIFIED)
+        val selection = buildString {
+            append("${MediaStore.Files.FileColumns.MIME_TYPE} IS NOT NULL")
+            append(" AND $data NOT LIKE ?")
+            if (!showHidden) append(" AND $data NOT LIKE ?")
+        }
+        val args = if (showHidden) arrayOf("%/.VoidTrash/%") else arrayOf("%/.VoidTrash/%", "%/.%")
+        val out = ArrayList<LocalNode>()
+        context.contentResolver.query(uri, projection, selection, args, "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC")?.use { c ->
+            while (c.moveToNext() && out.size < limit) {
+                val path = c.getString(0) ?: continue
+                val f = File(path)
+                if (f.isFile) out += LocalNode.of(f)
+            }
+        }
+        return out.sortedByDescending { it.lastModified }
+    }
 
     /** The volume root that contains [file], used to build breadcrumb chains. */
     fun rootFor(context: Context, file: File): File? {

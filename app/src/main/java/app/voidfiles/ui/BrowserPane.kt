@@ -147,8 +147,11 @@ private fun PaneHeader(
     onDialog: (Dlg) -> Unit,
 ) {
     val c = VoidTheme.colors
-    var searchOpen by remember(pane.current.id) { mutableStateOf(pane.search != null) }
-    var query by remember(pane.current.id) { mutableStateOf(pane.search?.query ?: "") }
+    val searchKind = pane.search?.kind
+    var searchOpen by remember(pane.current.id, searchKind) { mutableStateOf(searchKind == ListKind.SEARCH) }
+    var query by remember(pane.current.id, searchKind) {
+        mutableStateOf(if (searchKind == ListKind.SEARCH) pane.search?.query.orEmpty() else "")
+    }
     var menu by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxWidth().padding(top = if (compact) 4.dp else 8.dp)) {
@@ -177,10 +180,10 @@ private fun PaneHeader(
                     MenuItem("Neue Datei", Icons.Outlined.NoteAdd) { menu = false; onDialog(Dlg.NewFile(pane)) }
                     val cur = pane.current
                     if (cur is LocalNode) {
-                        val marked = cur.file.absolutePath in settings.bookmarks
-                        MenuItem(if (marked) "Lesezeichen entfernen" else "Lesezeichen setzen",
+                        val marked = cur.file.absolutePath in settings.quickAccess
+                        MenuItem(if (marked) "Aus Schnellzugriff entfernen" else "Zum Schnellzugriff",
                             if (marked) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder) {
-                            menu = false; vm.toggleBookmark(cur)
+                            menu = false; vm.toggleQuickAccess(cur)
                         }
                     }
                     MenuItem("Eigenschaften", Icons.Outlined.Info) { menu = false; vm.showProperties(pane.current) }
@@ -190,6 +193,7 @@ private fun PaneHeader(
         }
 
         val title = when {
+            pane.search?.kind == ListKind.RECENT -> "Zuletzt"
             pane.search != null -> "Suche"
             pane.stack.size == 1 && pane.current is LocalNode &&
                 (pane.current as LocalNode).file.absolutePath == Storage.primaryRoot.absolutePath -> "Intern"
@@ -224,6 +228,7 @@ private fun PaneHeader(
         val items = pane.visible
         val dirs = items.count { it.isDirectory }
         val info = when {
+            pane.search?.kind == ListKind.RECENT -> "${items.size} zuletzt geänderte Dateien · neueste zuerst"
             pane.search != null -> "${items.size} Treffer für \"${pane.search?.query}\""
             else -> "$dirs Ordner · ${items.size - dirs} Dateien"
         }
@@ -245,12 +250,12 @@ private fun Breadcrumbs(vm: MainViewModel, pane: Pane) {
             val last = i == pane.stack.lastIndex
             Text(
                 label.uppercase(),
-                style = MaterialTheme.typography.labelMedium,
-                color = if (last) c.text else c.textMuted,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = if (last) FontWeight.Bold else FontWeight.Normal),
+                color = if (last) c.accent else c.accent.copy(alpha = 0.72f),
                 modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { vm.navigateToCrumb(pane, i) }
                     .padding(horizontal = 6.dp, vertical = 4.dp),
             )
-            if (!last) Text("/", style = MaterialTheme.typography.labelMedium, color = c.divider)
+            if (!last) Text("/", style = MaterialTheme.typography.labelMedium, color = c.accent.copy(alpha = 0.4f))
         }
     }
 }
@@ -285,7 +290,8 @@ private fun SelectionHeader(vm: MainViewModel, pane: Pane, launcher: Launcher, c
                             MenuItem("Entpacken …", Icons.Outlined.Unarchive) { more = false; onDialog(Dlg.ArchiveAction(single)) }
                         }
                         if (single.isDirectory && single is LocalNode) {
-                            MenuItem("Lesezeichen", Icons.Outlined.BookmarkBorder) { more = false; vm.toggleBookmark(single) }
+                            MenuItem(if (vm.isQuickAccess(single)) "Aus Schnellzugriff entfernen" else "Zum Schnellzugriff",
+                                Icons.Outlined.BookmarkBorder) { more = false; vm.toggleQuickAccess(single); vm.clearSelection(pane) }
                         }
                     }
                     MenuItem("An Proton Drive senden", Icons.Outlined.CloudUpload) {
@@ -344,7 +350,11 @@ private fun PaneContent(vm: MainViewModel, pane: Pane, settings: AppSettings, co
     when {
         pane.error != null && pane.search == null -> EmptyState("Kein Zugriff", pane.error ?: "")
         items.isEmpty() && !pane.loading && pane.search?.running != true ->
-            EmptyState(if (pane.search != null) "Nichts gefunden" else "Leer", if (pane.search != null) "" else "Dieser Ordner ist leer")
+            when (pane.search?.kind) {
+                ListKind.RECENT -> EmptyState("Leer", "Keine kürzlich geänderten Dateien gefunden")
+                ListKind.SEARCH -> EmptyState("Nichts gefunden", "")
+                null -> EmptyState("Leer", "Dieser Ordner ist leer")
+            }
         settings.viewMode == ViewMode.GRID -> LazyVerticalGrid(
             columns = GridCells.Adaptive(if (compact) 88.dp else 104.dp),
             contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = 120.dp),
@@ -353,6 +363,21 @@ private fun PaneContent(vm: MainViewModel, pane: Pane, settings: AppSettings, co
             items(items, key = { it.id }) { node ->
                 GridItem(node, node.id in pane.selection, settings.thumbnails,
                     onClick = { vm.openNode(pane, node) }, onLongClick = { vm.toggleSelect(pane, node) })
+            }
+        }
+        pane.search?.kind == ListKind.RECENT -> LazyColumn(Modifier.fillMaxSize(), contentPadding = bottomPad) {
+            items.groupBy { dayLabel(it.lastModified) }.forEach { (day, files) ->
+                item(key = "day:$day") {
+                    Label(day, Modifier.padding(start = if (compact) 12.dp else 20.dp, top = 14.dp, bottom = 4.dp), color = VoidTheme.colors.accent)
+                }
+                items(files, key = { it.id }) { node ->
+                    FileRow(
+                        node, node.id in pane.selection, settings.thumbnails, compact,
+                        subtitle = "${formatSize(node.size)}  ·  ${timeOf(node.lastModified)}  ·  ${parentHint(node)}",
+                        onClick = { vm.openNode(pane, node) },
+                        onLongClick = { vm.toggleSelect(pane, node) },
+                    )
+                }
             }
         }
         else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = bottomPad) {
@@ -367,6 +392,23 @@ private fun PaneContent(vm: MainViewModel, pane: Pane, settings: AppSettings, co
         }
     }
 }
+
+private fun dayLabel(ms: Long): String {
+    val day = 24 * 60 * 60 * 1000L
+    val cal = java.util.Calendar.getInstance().apply {
+        set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
+        set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+    }
+    val today = cal.timeInMillis
+    return when {
+        ms >= today -> "Heute"
+        ms >= today - day -> "Gestern"
+        ms >= today - 6 * day -> java.text.SimpleDateFormat("EEEE", java.util.Locale.GERMAN).format(java.util.Date(ms))
+        else -> java.text.SimpleDateFormat("d. MMMM yyyy", java.util.Locale.GERMAN).format(java.util.Date(ms))
+    }
+}
+
+private fun timeOf(ms: Long): String = java.text.SimpleDateFormat("HH:mm", java.util.Locale.GERMAN).format(java.util.Date(ms))
 
 private fun parentHint(node: Node): String = when (node) {
     is LocalNode -> node.file.parentFile?.absolutePath?.removePrefix(Storage.primaryRoot.absolutePath)?.ifEmpty { "/" } ?: ""

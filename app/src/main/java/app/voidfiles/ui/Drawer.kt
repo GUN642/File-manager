@@ -1,6 +1,7 @@
 package app.voidfiles.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,7 +16,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.RemoveCircleOutline
+import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Delete
@@ -30,6 +35,7 @@ import androidx.compose.material.icons.outlined.SdCard
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.Text
@@ -43,10 +49,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.voidfiles.BuildConfig
 import app.voidfiles.data.AppSettings
 import app.voidfiles.data.CloudRoot
+import app.voidfiles.data.LocalNode
 import app.voidfiles.data.Storage
 import app.voidfiles.ui.theme.VoidTheme
 import app.voidfiles.ui.theme.headingStyle
@@ -63,8 +71,8 @@ fun Drawer(
     val c = VoidTheme.colors
     val context = LocalContext.current
     val volumes = remember { Storage.volumes(context) }
-    val quick = remember { Storage.quickFolders() }
     var removeRoot by remember { mutableStateOf<CloudRoot?>(null) }
+    var editQuick by remember { mutableStateOf(false) }
 
     ModalDrawerSheet(drawerContainerColor = c.background, drawerContentColor = c.text) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(vertical = 20.dp)) {
@@ -98,19 +106,60 @@ fun Drawer(
                 }
             }
 
-            Section("Schnellzugriff")
-            quick.forEach { q ->
-                DrawerItem(q.label, quickIcon(q.label)) { vm.openLocal(vm.active, q.file); close() }
+            Row(
+                Modifier.fillMaxWidth().padding(top = 14.dp, start = 24.dp, end = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Label("Schnellzugriff", Modifier.weight(1f))
+                Text(
+                    if (editQuick) "FERTIG" else "BEARBEITEN",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = c.accent,
+                    modifier = Modifier.clip(RoundedCornerShape(50)).clickable { editQuick = !editQuick }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                )
             }
-
-            if (settings.bookmarks.isNotEmpty()) {
-                Section("Lesezeichen")
-                settings.bookmarks.forEach { path ->
-                    val f = File(path)
-                    DrawerItem(f.name.ifEmpty { path }, Icons.Outlined.Bookmark, onLongClick = { vm.update { toggleBookmark(path) } }) {
-                        vm.openLocal(vm.active, f); close()
+            DrawerItem(RECENT_QUERY, Icons.Outlined.History) { vm.showRecent(vm.active); close() }
+            settings.quickAccess.forEachIndexed { i, path ->
+                val label = Storage.labelFor(path)
+                if (editQuick) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(start = 24.dp, end = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(quickIcon(label), null, tint = c.textMuted, modifier = Modifier.size(22.dp))
+                        Spacer(Modifier.width(16.dp))
+                        Text(label, color = c.text, style = MaterialTheme.typography.bodyLarge, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        IconButton(onClick = { vm.update { moveQuickAccess(path, -1) } }, enabled = i > 0) {
+                            Icon(Icons.Outlined.KeyboardArrowUp, "Nach oben", tint = if (i > 0) c.text else c.divider)
+                        }
+                        IconButton(onClick = { vm.update { moveQuickAccess(path, 1) } }, enabled = i < settings.quickAccess.lastIndex) {
+                            Icon(Icons.Outlined.KeyboardArrowDown, "Nach unten",
+                                tint = if (i < settings.quickAccess.lastIndex) c.text else c.divider)
+                        }
+                        IconButton(onClick = { vm.update { removeQuickAccess(path) } }) {
+                            Icon(Icons.Outlined.RemoveCircleOutline, "Entfernen", tint = c.accent)
+                        }
+                    }
+                } else {
+                    DrawerItem(label, quickIcon(label), onLongClick = { editQuick = true }) {
+                        vm.openLocal(vm.active, File(path)); close()
                     }
                 }
+            }
+            if (editQuick) {
+                val cur = vm.active.current
+                if (cur is LocalNode && cur.file.absolutePath !in settings.quickAccess) {
+                    DrawerItem("\"${Storage.labelFor(cur.file.absolutePath)}\" hinzufügen", Icons.Outlined.Add) {
+                        vm.update { addQuickAccess(cur.file.absolutePath) }
+                    }
+                }
+                Label(
+                    "Tipp: Ordner öffnen und im ⋮-Menü \"Zum Schnellzugriff\" wählen.",
+                    Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
+                )
+                DrawerItem("Standard wiederherstellen", Icons.Outlined.Restore) { vm.update { resetQuickAccess() } }
             }
 
             Section("Cloud")
@@ -137,6 +186,7 @@ fun Drawer(
 }
 
 private fun quickIcon(label: String): ImageVector = when (label) {
+    "Interner Speicher" -> Icons.Outlined.PhoneAndroid
     "Downloads" -> Icons.Outlined.Download
     "Kamera" -> Icons.Outlined.CameraAlt
     "Bilder" -> Icons.Outlined.Image

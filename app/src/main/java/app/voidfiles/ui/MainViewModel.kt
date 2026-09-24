@@ -47,7 +47,14 @@ data class OpState(
 
 data class Clipboard(val nodes: List<Node>, val cut: Boolean)
 
-data class SearchState(val query: String, val results: List<Node>, val running: Boolean)
+enum class ListKind { SEARCH, RECENT }
+
+data class SearchState(
+    val query: String,
+    val results: List<Node>,
+    val running: Boolean,
+    val kind: ListKind = ListKind.SEARCH,
+)
 
 /** A copy/move waiting for the user to decide what happens with existing names. */
 data class PendingTransfer(val nodes: List<Node>, val dest: Node, val move: Boolean, val conflicts: List<String>)
@@ -65,6 +72,8 @@ sealed interface UiEvent {
     data class Message(val text: String) : UiEvent
     data class Open(val node: Node) : UiEvent
 }
+
+const val RECENT_QUERY = "Letzte Dateien"
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     val fs = FileSystem(app)
@@ -137,6 +146,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun reload(pane: Pane) {
+        if (pane.search?.kind == ListKind.RECENT) loadRecent(pane)
         pane.loadJob?.cancel()
         val dir = pane.current
         pane.loading = true
@@ -402,6 +412,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Shows the most recently modified files (newest first) in [pane]. */
+    fun showRecent(pane: Pane) {
+        screen = Screen.FILES
+        pane.selection = emptySet()
+        pane.search = SearchState(RECENT_QUERY, pane.search?.takeIf { it.kind == ListKind.RECENT }?.results ?: emptyList(),
+            running = true, kind = ListKind.RECENT)
+        loadRecent(pane)
+    }
+
+    private fun loadRecent(pane: Pane) {
+        pane.searchJob?.cancel()
+        val showHidden = current.showHidden
+        pane.searchJob = viewModelScope.launch(Dispatchers.IO) {
+            val files = runCatching { Storage.recentFiles(getApplication(), showHidden = showHidden) }.getOrDefault(emptyList())
+            if (pane.search?.kind == ListKind.RECENT) {
+                pane.search = SearchState(RECENT_QUERY, files, running = false, kind = ListKind.RECENT)
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ misc
 
     fun showProperties(node: Node) {
@@ -418,13 +448,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun toggleBookmark(node: Node) {
-        if (node !is LocalNode) {
-            message("Lesezeichen gibt es nur für lokale Ordner"); return
+    fun isQuickAccess(node: Node) = node is LocalNode && node.file.absolutePath in current.quickAccess
+
+    fun toggleQuickAccess(node: Node) {
+        if (node !is LocalNode || !node.isDirectory) {
+            message("Nur lokale Ordner können in den Schnellzugriff"); return
         }
-        val had = node.file.absolutePath in current.bookmarks
-        viewModelScope.launch { repo.toggleBookmark(node.file.absolutePath) }
-        message(if (had) "Lesezeichen entfernt" else "Lesezeichen gesetzt")
+        val path = node.file.absolutePath
+        val had = path in current.quickAccess
+        viewModelScope.launch { if (had) repo.removeQuickAccess(path) else repo.addQuickAccess(path) }
+        message(if (had) "Aus Schnellzugriff entfernt" else "Zum Schnellzugriff hinzugefügt")
     }
 
     fun addCloudRoot(uri: Uri) {
