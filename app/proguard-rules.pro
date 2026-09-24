@@ -1,0 +1,15 @@
+# Archive libraries reference optional codecs and JVM-only classes we never use.
+-dontwarn org.apache.commons.compress.**
+-dontwarn com.github.luben.zstd.**
+-dontwarn org.brotli.dec.**
+-dontwarn org.objectweb.asm.**
+-dontwarn org.osgi.**
+-dontwarn javax.**
+-dontwarn java.awt.**
+-dontwarn org.slf4j.**
+-dontwarn com.github.junrar.**
+-keep class org.apache.commons.compress.archivers.** { *; }
+-keep class org.apache.commons.compress.compressors.** { *; }
+-keep class org.tukaani.xz.** { *; }
+-keep class com.github.junrar.** { *; }
+-keep class net.lingala.zip4j.** { *; }
