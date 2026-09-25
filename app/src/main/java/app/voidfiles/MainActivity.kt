@@ -52,6 +52,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         hasAccess = checkAccess()
+        if (savedInstanceState == null) vm.receiveShare(intent)
         setContent {
             val settings by vm.settings.collectAsStateWithLifecycle()
             VoidFilesTheme(settings.theme, settings.accent, settings.dotHeadings, settings.dotGrid) {
@@ -62,6 +63,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        vm.receiveShare(intent)
     }
 
     override fun onResume() {

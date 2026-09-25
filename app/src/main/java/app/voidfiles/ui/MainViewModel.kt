@@ -4,6 +4,9 @@ import android.app.Application
 import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
+import androidx.core.content.IntentCompat
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -42,6 +45,8 @@ import java.io.File
 import java.util.concurrent.CancellationException
 
 enum class Screen { FILES, SETTINGS, TRASH }
+
+data class SharedItem(val uri: Uri?, val name: String, val size: Long, val text: String? = null)
 
 data class OpState(
     val title: String,
@@ -614,7 +619,95 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         opJob?.cancel()
     }
 
-    private fun runOp(title: String, measure: List<Node>?, block: (ProgressSink) -> String?) {
+    // ------------------------------------------------------------------ receiving shared files
+
+    /** Files another app shared with us, waiting for the user to pick a folder. */
+    var incomingShare by mutableStateOf<List<SharedItem>?>(null)
+
+    fun receiveShare(intent: Intent) {
+        val app = getApplication<Application>()
+        val uris = ArrayList<Uri>()
+        when (intent.action) {
+            Intent.ACTION_SEND -> IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.let { uris += it }
+            Intent.ACTION_SEND_MULTIPLE ->
+                IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.let { uris += it }
+            else -> return
+        }
+        if (uris.isEmpty()) intent.clipData?.let { clip -> for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let { uris += it } }
+        val items = uris.distinct().mapIndexed { i, uri -> describeShared(app, uri, i) }.toMutableList()
+        if (items.isEmpty()) {
+            val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+            if (text.isNullOrBlank()) {
+                message("Nichts zum Speichern erhalten"); return
+            }
+            val subject = intent.getStringExtra(Intent.EXTRA_SUBJECT)?.takeIf { it.isNotBlank() }
+            val base = (subject ?: "Geteilter Text").replace(Regex("[\\\\/:*?\"<>|]"), "_").take(60)
+            items += SharedItem(null, "$base.txt", text.toByteArray().size.toLong(), text)
+        }
+        incomingShare = items
+        screen = Screen.FILES
+    }
+
+    private fun describeShared(app: Application, uri: Uri, index: Int): SharedItem {
+        var name: String? = null
+        var size = 0L
+        runCatching {
+            app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    if (!c.isNull(0)) name = c.getString(0)
+                    if (!c.isNull(1)) size = c.getLong(1)
+                }
+            }
+        }
+        if (name.isNullOrBlank()) {
+            if (uri.scheme == "file") name = uri.lastPathSegment
+        }
+        if (name.isNullOrBlank()) {
+            val ext = app.contentResolver.getType(uri)?.let { MimeTypeMap.getSingleton().getExtensionFromMimeType(it) }
+            name = "Geteilt_${System.currentTimeMillis()}_${index + 1}" + (ext?.let { ".$it" } ?: "")
+        }
+        return SharedItem(uri, name!!.substringAfterLast('/'), size)
+    }
+
+    fun cancelShare() {
+        incomingShare = null
+    }
+
+    /** Saves the shared files into the folder shown in [pane], then calls [onDone]. */
+    fun saveShare(pane: Pane, onDone: () -> Unit) {
+        val items = incomingShare ?: return
+        val dest = pane.current
+        if (pane.search != null) {
+            message("Bitte zuerst einen Ordner öffnen"); return
+        }
+        val app = getApplication<Application>()
+        runOp("Speichere ${items.size} ${if (items.size == 1) "Datei" else "Dateien"}", measure = null, onSuccess = {
+            incomingShare = null
+            onDone()
+        }) { sink ->
+            sink.checkCancelled()
+            for (item in items) {
+                sink.onFile(item.name)
+                val target = fs.createFile(dest, fs.uniqueName(dest, item.name))
+                try {
+                    val input = if (item.text != null) item.text.byteInputStream()
+                    else app.contentResolver.openInputStream(item.uri!!) ?: throw java.io.IOException("Kann ${item.name} nicht lesen")
+                    fs.copyStream(input, fs.openOutput(target), sink)
+                } catch (e: Throwable) {
+                    runCatching { fs.delete(target) }
+                    throw e
+                }
+            }
+            "${items.size} ${if (items.size == 1) "Datei" else "Dateien"} gespeichert in ${dest.name}"
+        }
+    }
+
+    private fun runOp(
+        title: String,
+        measure: List<Node>?,
+        onSuccess: (() -> Unit)? = null,
+        block: (ProgressSink) -> String?,
+    ) {
         if (opJob?.isActive == true) {
             message("Es läuft bereits ein Vorgang")
             return
@@ -644,12 +737,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             }
+            var ok = false
             val result = try {
                 if (measure != null) {
                     sink.total = measure.sumOf { runCatching { fs.measure(it, sink).first }.getOrDefault(0L) }
                     sink.push(true)
                 }
-                block(sink)
+                block(sink).also { ok = true }
             } catch (e: CancellationException) {
                 "Abgebrochen"
             } catch (e: Throwable) {
@@ -657,7 +751,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             op = null
             if (result != null) message(result)
-            withContext(NonCancellable + Dispatchers.Main) { reloadAll() }
+            withContext(NonCancellable + Dispatchers.Main) {
+                reloadAll()
+                if (ok) onSuccess?.invoke()
+            }
         }
         opJob = job
     }

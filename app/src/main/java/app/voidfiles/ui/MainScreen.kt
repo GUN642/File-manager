@@ -38,6 +38,7 @@ import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.NoteAdd
+import androidx.compose.material.icons.outlined.SaveAlt
 import androidx.compose.material.icons.outlined.SyncAlt
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
@@ -264,9 +265,10 @@ private fun FilesLayout(
             AnimatedVisibility(vm.op != null, enter = fadeIn() + slideInVertically { it }, exit = fadeOut() + slideOutVertically { it }) {
                 vm.op?.let { OpCard(it) { vm.cancelOp() } }
             }
+            vm.incomingShare?.let { items -> ShareBar(vm, items) }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val clip = vm.clipboard
-                if (clip != null) {
+                if (clip != null && vm.incomingShare == null) {
                     Row(
                         Modifier.weight(1f).clip(RoundedCornerShape(50)).background(c.text).padding(start = 18.dp, end = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -287,6 +289,46 @@ private fun FilesLayout(
                     Spacer(Modifier.weight(1f))
                 }
                 if (vm.active.selection.isEmpty()) NewFab(vm, onDialog)
+            }
+        }
+    }
+}
+
+/** Shown when another app shared files with us: pick a folder, then save here. */
+@Composable
+private fun ShareBar(vm: MainViewModel, items: List<SharedItem>) {
+    val c = VoidTheme.colors
+    val activity = LocalContext.current as? Activity
+    val first = items.first()
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.text).padding(start = 18.dp, end = 8.dp, top = 12.dp, bottom = 6.dp),
+    ) {
+        Text(
+            if (items.size == 1) first.name else "${items.size} Dateien",
+            style = MaterialTheme.typography.titleMedium, color = c.background, maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        )
+        val total = items.sumOf { it.size }
+        Text(
+            (if (total > 0) "${formatSize(total)} · " else "") + "Ziel: ${vm.active.current.name.uppercase()}",
+            style = MaterialTheme.typography.labelMedium, color = c.background.copy(alpha = 0.7f), maxLines = 1,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = {
+                vm.cancelShare()
+                activity?.finish()
+            }) { Text("ABBRECHEN", style = MaterialTheme.typography.labelLarge, color = c.background.copy(alpha = 0.7f)) }
+            TextButton(onClick = {
+                val folder = vm.active.current.name
+                vm.saveShare(vm.active) {
+                    android.widget.Toast.makeText(activity ?: return@saveShare, "Gespeichert in $folder", android.widget.Toast.LENGTH_SHORT).show()
+                    activity.finish()
+                }
+            }) {
+                Icon(Icons.Outlined.SaveAlt, null, tint = c.accent, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("HIER SPEICHERN", style = MaterialTheme.typography.labelLarge, color = c.accent)
             }
         }
     }
