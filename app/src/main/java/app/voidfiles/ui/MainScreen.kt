@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -124,32 +125,34 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
             )
         },
     ) {
-        Scaffold(
-            containerColor = c.background,
-            snackbarHost = {
-                SnackbarHost(snackbar) { data ->
-                    Snackbar(
-                        data,
-                        containerColor = c.text,
-                        contentColor = c.background,
-                        shape = RoundedCornerShape(50),
-                    )
+        Box(Modifier.fillMaxSize()) {
+            Scaffold(containerColor = c.background) { padding ->
+                Box(Modifier.fillMaxSize().padding(padding)) {
+                    when (vm.screen) {
+                        Screen.SETTINGS -> SettingsScreen(vm, settings) { vm.screen = Screen.FILES }
+                        Screen.TRASH -> TrashScreen(vm) { vm.screen = Screen.FILES }
+                        Screen.FILES -> FilesLayout(
+                            vm = vm,
+                            settings = settings,
+                            dual = dual,
+                            launcher = launcher,
+                            onMenu = { scope.launch { drawer.open() } },
+                            onDialog = { dlg = it },
+                        )
+                    }
                 }
-            },
-        ) { padding ->
-            Box(Modifier.fillMaxSize().padding(padding)) {
-                when (vm.screen) {
-                    Screen.SETTINGS -> SettingsScreen(vm, settings) { vm.screen = Screen.FILES }
-                    Screen.TRASH -> TrashScreen(vm) { vm.screen = Screen.FILES }
-                    Screen.FILES -> FilesLayout(
-                        vm = vm,
-                        settings = settings,
-                        dual = dual,
-                        launcher = launcher,
-                        onMenu = { scope.launch { drawer.open() } },
-                        onDialog = { dlg = it },
-                    )
-                }
+            }
+            // Messages appear at the top so they never cover the paste bar or buttons at the bottom.
+            SnackbarHost(
+                snackbar,
+                Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 8.dp, start = 16.dp, end = 16.dp),
+            ) { data ->
+                Snackbar(
+                    data,
+                    containerColor = c.text,
+                    contentColor = c.background,
+                    shape = RoundedCornerShape(50),
+                )
             }
         }
     }

@@ -3,6 +3,7 @@ package app.voidfiles.ui
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -137,11 +138,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+        val start = startStack()
+        left.stack = start
+        right.stack = start
         reload(left)
         reload(right)
         viewModelScope.launch {
             if (repo.settings.first().autoUpdateCheck) checkForUpdates(manual = false)
         }
+    }
+
+    /** The app opens in the Download folder (falls back to internal storage). */
+    private fun startStack(): List<Node> {
+        val download = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val target = if (download.isDirectory) download else Storage.primaryRoot
+        return Storage.chain(getApplication(), target).map { LocalNode.of(it) }
     }
 
     fun checkForUpdates(manual: Boolean) {
