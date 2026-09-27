@@ -50,7 +50,9 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
@@ -71,6 +73,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.voidfiles.data.AppSettings
+import androidx.fragment.app.FragmentActivity
 import app.voidfiles.data.Archives
 import app.voidfiles.ui.theme.VoidTheme
 import kotlinx.coroutines.launch
@@ -98,7 +101,15 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
             when (e) {
                 is UiEvent.Message -> {
                     snackbar.currentSnackbarData?.dismiss()
-                    launch { snackbar.showSnackbar(e.text) }
+                    launch {
+                        val undo = e.undo
+                        val result = snackbar.showSnackbar(
+                            e.text,
+                            actionLabel = undo?.label?.uppercase(),
+                            duration = if (undo != null) SnackbarDuration.Long else SnackbarDuration.Short,
+                        )
+                        if (result == SnackbarResult.ActionPerformed) undo?.run?.invoke()
+                    }
                 }
                 is UiEvent.Open -> if (Archives.isArchive(e.node.name)) dlg = Dlg.ArchiveAction(e.node) else launcher.open(e.node)
                 is UiEvent.Install -> launcher.installApk(e.apk)
@@ -123,6 +134,11 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
                 launcher = launcher,
                 close = { scope.launch { drawer.close() } },
                 onAddCloud = { protonHint = true },
+                onOpenVault = {
+                    val activity = context as? FragmentActivity
+                    if (activity == null) vm.message("Tresor nicht verfügbar")
+                    else authenticate(activity, "Tresor entsperren", onError = { vm.message(it) }) { vm.unlockVault() }
+                },
             )
         },
     ) {
@@ -132,6 +148,10 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
                     when (vm.screen) {
                         Screen.SETTINGS -> SettingsScreen(vm, settings) { vm.screen = Screen.FILES }
                         Screen.TRASH -> TrashScreen(vm) { vm.screen = Screen.FILES }
+                        Screen.ARCHIVE -> ArchiveScreen(vm)
+                        Screen.ANALYSIS -> AnalysisScreen(vm)
+                        Screen.VAULT -> VaultScreen(vm)
+                        Screen.VIEWER -> Unit
                         Screen.FILES -> FilesLayout(
                             vm = vm,
                             settings = settings,
@@ -143,6 +163,9 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
                     }
                 }
             }
+            if (vm.screen == Screen.VIEWER) ViewerScreen(vm, launcher)
+            // Nothing-style glyph burst after a finished operation.
+            GlyphFlash(vm.glyphTick, Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp).size(220.dp))
             // Messages appear at the top so they never cover the paste bar or buttons at the bottom.
             SnackbarHost(
                 snackbar,
@@ -152,7 +175,8 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
                     data,
                     containerColor = c.text,
                     contentColor = c.background,
-                    shape = RoundedCornerShape(50),
+                    actionColor = c.accent,
+                    shape = RoundedCornerShape(28.dp),
                 )
             }
         }
@@ -184,7 +208,20 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
             onExtractFolder = { dlg = null; vm.extract(d.node, vm.active.current, intoFolder = true) },
             onExtractOther = { dlg = null; vm.extract(d.node, vm.other.current, intoFolder = true) },
             onOpenWith = { dlg = null; launcher.open(d.node, chooser = true) },
+            onBrowse = { dlg = null; vm.openArchive(d.node) },
         )
+        is Dlg.BatchRename -> BatchRenameDialog(d.nodes, { rule -> vm.batchNames(d.nodes, rule) }, { dlg = null }) { rule ->
+            dlg = null; vm.batchRename(d.pane, d.nodes, rule)
+        }
+        is Dlg.MoveToVault -> ConfirmDialog(
+            "Tresor",
+            "${d.nodes.size} ${if (d.nodes.size == 1) "Datei" else "Dateien"} verschlüsseln und in den Tresor verschieben? " +
+                "Die Originale werden danach gelöscht. Öffnen nur mit Fingerabdruck bzw. Displaysperre.",
+            "Verschieben",
+            { dlg = null },
+        ) {
+            dlg = null; vm.moveToVault(d.pane, d.nodes)
+        }
         is Dlg.Sort -> SortDialog(
             sortBy = settings.sortBy,
             ascending = settings.sortAscending,
@@ -202,10 +239,10 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
     vm.pendingPassword?.let { p ->
         PasswordDialog(p.archive.name, p.wrong, { vm.pendingPassword = null }) { pw ->
             vm.pendingPassword = null
-            vm.extract(p.archive, p.dest, p.intoFolder, pw)
+            if (p.browse) vm.openArchive(p.archive, pw, p.browseDir) else vm.extract(p.archive, p.dest, p.intoFolder, pw)
         }
     }
-    vm.properties?.let { PropertiesDialog(it) { vm.properties = null } }
+    vm.properties?.let { p -> PropertiesDialog(p, { vm.properties = null }) { vm.computeChecksums(p.node) } }
     val update = vm.availableUpdate
     if (vm.showUpdateDialog && update != null) {
         UpdateDialog(update, onDismiss = { vm.showUpdateDialog = false }) { vm.downloadUpdate(update) }
@@ -353,26 +390,25 @@ private fun NewFab(vm: MainViewModel, onDialog: (Dlg) -> Unit) {
 @Composable
 private fun OpCard(op: OpState, onCancel: () -> Unit) {
     val c = VoidTheme.colors
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.surfaceHigh)
-            .border(1.dp, c.divider, RoundedCornerShape(24.dp)).padding(horizontal = 18.dp, vertical = 14.dp),
+    val fraction = if (op.total > 0) (op.done.toFloat() / op.total).coerceIn(0f, 1f) else null
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(c.surfaceHigh)
+            .border(1.dp, c.divider, RoundedCornerShape(28.dp)).padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(op.title, color = c.text, style = MaterialTheme.typography.titleMedium, maxLines = 1)
-                if (op.file.isNotEmpty()) Label(op.file, color = c.textMuted)
+        Box(contentAlignment = Alignment.Center) {
+            DotRing(fraction, Modifier.size(52.dp), dots = 20)
+            if (fraction != null) {
+                Text("${(fraction * 100).toInt()}", style = MaterialTheme.typography.labelSmall, color = c.text)
             }
-            TextButton(onClick = onCancel) { Text("ABBRECHEN", style = MaterialTheme.typography.labelLarge, color = c.accent) }
         }
-        Spacer(Modifier.height(8.dp))
-        if (op.total > 0) {
-            val f = (op.done.toFloat() / op.total).coerceIn(0f, 1f)
-            DotBar(f, Modifier.fillMaxWidth().height(10.dp), dots = 36)
-            Spacer(Modifier.height(4.dp))
-            Label("${formatSize(op.done)} / ${formatSize(op.total)} · ${(f * 100).toInt()} %")
-        } else {
-            LinearProgressIndicator(Modifier.fillMaxWidth(), color = c.accent, trackColor = c.divider)
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(op.title, color = c.text, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+            if (op.file.isNotEmpty()) Label(op.file, color = c.textMuted)
+            if (op.total > 0) Label("${formatSize(op.done)} / ${formatSize(op.total)}")
         }
+        TextButton(onClick = onCancel) { Text("ABBRECHEN", style = MaterialTheme.typography.labelLarge, color = c.accent) }
     }
 }
 

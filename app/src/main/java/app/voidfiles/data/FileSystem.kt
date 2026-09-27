@@ -268,6 +268,18 @@ class FileSystem(context: Context) {
         return target
     }
 
+    /** Copies without closing either stream. */
+    fun copyStreamRaw(input: InputStream, output: OutputStream, sink: ProgressSink) {
+        val buf = ByteArray(256 * 1024)
+        while (true) {
+            sink.checkCancelled()
+            val n = input.read(buf)
+            if (n < 0) break
+            output.write(buf, 0, n)
+            sink.onBytes(n.toLong())
+        }
+    }
+
     fun copyStream(input: InputStream, output: OutputStream, sink: ProgressSink) {
         input.use { i ->
             output.use { o ->

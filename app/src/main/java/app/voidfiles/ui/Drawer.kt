@@ -17,6 +17,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.PieChart
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.RemoveCircleOutline
@@ -67,6 +69,7 @@ fun Drawer(
     launcher: Launcher,
     close: () -> Unit,
     onAddCloud: () -> Unit,
+    onOpenVault: () -> Unit,
 ) {
     val c = VoidTheme.colors
     val context = LocalContext.current
@@ -172,6 +175,8 @@ fun Drawer(
             DrawerItem("Proton Drive öffnen", Icons.Outlined.OpenInNew) { close(); launcher.openProtonApp() }
 
             Section("")
+            DrawerItem("Speicheranalyse", Icons.Outlined.PieChart) { vm.screen = Screen.ANALYSIS; close() }
+            DrawerItem("Tresor", Icons.Outlined.Lock) { close(); onOpenVault() }
             DrawerItem("Papierkorb", Icons.Outlined.Delete) { vm.loadTrash(); vm.screen = Screen.TRASH; close() }
             DrawerItem("Einstellungen", Icons.Outlined.Settings) { vm.screen = Screen.SETTINGS; close() }
         }

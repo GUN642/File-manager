@@ -13,7 +13,15 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.voidfiles.BuildConfig
+import app.voidfiles.data.AnalysisResult
+import app.voidfiles.data.Analyzer
 import app.voidfiles.data.AppSettings
+import app.voidfiles.data.ArchiveBrowser
+import app.voidfiles.data.ArchiveItem
+import app.voidfiles.data.ArchiveListing
+import app.voidfiles.data.FileInfo
+import app.voidfiles.data.Vault
+import app.voidfiles.data.VaultEntry
 import app.voidfiles.data.Archives
 import app.voidfiles.data.CloudRoot
 import app.voidfiles.data.ConflictPolicy
@@ -44,7 +52,37 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.CancellationException
 
-enum class Screen { FILES, SETTINGS, TRASH }
+enum class Screen { FILES, SETTINGS, TRASH, ARCHIVE, VIEWER, ANALYSIS, VAULT }
+
+/** An action offered in a message, e.g. "Rückgängig". */
+class UndoAction(val label: String = "Rückgängig", val run: () -> Unit)
+
+enum class PreviewKind { IMAGE, TEXT, PDF, MEDIA }
+
+data class ViewerState(val files: List<Node>, val index: Int, val returnTo: Screen)
+
+/** An archive opened for browsing: current folder inside it and the selected entries. */
+data class ArchiveView(val listing: ArchiveListing, val dir: String = "", val selection: Set<String> = emptySet())
+
+data class AnalysisUi(
+    val running: Boolean = false,
+    val count: Int = 0,
+    val status: String = "",
+    val volume: String = "",
+    val result: AnalysisResult? = null,
+)
+
+/** Settings for renaming several files at once. */
+data class RenameRule(
+    val replaceMode: Boolean = false,
+    val pattern: String = "{name}_{n}",
+    val start: Int = 1,
+    val find: String = "",
+    val replace: String = "",
+)
+
+const val ACTION_OPEN_FOLDER = "app.voidfiles.OPEN_FOLDER"
+const val EXTRA_PATH = "path"
 
 data class SharedItem(val uri: Uri?, val name: String, val size: Long, val text: String? = null)
 
@@ -69,22 +107,38 @@ data class SearchState(
 /** A copy/move waiting for the user to decide what happens with existing names. */
 data class PendingTransfer(val nodes: List<Node>, val dest: Node, val move: Boolean, val conflicts: List<String>)
 
-data class PendingPassword(val archive: Node, val dest: Node, val intoFolder: Boolean, val wrong: Boolean)
+data class PendingPassword(
+    val archive: Node,
+    val dest: Node,
+    val intoFolder: Boolean,
+    val wrong: Boolean,
+    val browse: Boolean = false,
+    val browseDir: String = "",
+)
 
 data class Properties(
     val node: Node,
     val path: String,
     val size: Long?,
     val files: Int?,
+    val details: List<Pair<String, String>> = emptyList(),
+    val md5: String? = null,
+    val sha256: String? = null,
+    val hashing: Boolean = false,
 )
 
 sealed interface UiEvent {
-    data class Message(val text: String) : UiEvent
+    data class Message(val text: String, val undo: UndoAction? = null) : UiEvent
     data class Open(val node: Node) : UiEvent
     data class Install(val apk: File) : UiEvent
 }
 
 const val RECENT_QUERY = "Letzte Dateien"
+
+private val TEXT_EXTENSIONS = setOf(
+    "txt", "md", "log", "json", "xml", "csv", "kt", "kts", "java", "py", "js", "ts", "html", "htm", "css", "sh",
+    "yml", "yaml", "ini", "conf", "cfg", "properties", "gradle", "c", "cpp", "h", "rs", "go", "sql", "toml", "srt", "nfo",
+)
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     val fs = FileSystem(app)
@@ -117,6 +171,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var transferMove by mutableStateOf(false)
 
     private var opJob: Job? = null
+
+    /** Incremented after every finished operation – drives the Glyph flash animation. */
+    var glyphTick by mutableStateOf(0)
+        private set
+
+    /** Undo for the operation that is currently running; picked up when its message is shown. */
+    @Volatile
+    private var nextUndo: UndoAction? = null
+
+    var archiveView by mutableStateOf<ArchiveView?>(null)
+    var viewer by mutableStateOf<ViewerState?>(null)
+        private set
+    var analysis by mutableStateOf(AnalysisUi())
+        private set
+    private var analysisJob: Job? = null
+
+    private val vault = Vault(app)
+    var vaultUnlocked by mutableStateOf(false)
+        private set
+    var vaultEntries by mutableStateOf<List<VaultEntry>>(emptyList())
+        private set
 
     // ------------------------------------------------------------------ updates
     var releases by mutableStateOf<List<Release>>(emptyList())
@@ -215,8 +290,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun message(text: String) {
-        events.trySend(UiEvent.Message(text))
+    fun message(text: String, undo: UndoAction? = null) {
+        events.trySend(UiEvent.Message(text, undo))
     }
 
     // ------------------------------------------------------------------ listing & navigation
@@ -267,7 +342,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             toggleSelect(pane, node); return
         }
         if (!node.isDirectory) {
-            events.trySend(UiEvent.Open(node)); return
+            if (current.internalViewer && !Archives.isArchive(node.name) && previewKindOf(node) != null) {
+                openViewer(node, pane.visible)
+            } else {
+                events.trySend(UiEvent.Open(node))
+            }
+            return
         }
         pane.search = null
         when (node) {
@@ -311,8 +391,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Handles the system back gesture. Returns false when there is nothing left to go back to. */
     fun back(): Boolean {
-        if (screen != Screen.FILES) {
-            screen = Screen.FILES; return true
+        when (screen) {
+            Screen.FILES -> Unit
+            Screen.VIEWER -> {
+                closeViewer(); return true
+            }
+            Screen.ARCHIVE -> {
+                val v = archiveView
+                when {
+                    v == null -> screen = Screen.FILES
+                    v.selection.isNotEmpty() -> archiveView = v.copy(selection = emptySet())
+                    v.dir.isNotEmpty() -> archiveView = v.copy(dir = if ('/' in v.dir) v.dir.substringBeforeLast('/') else "")
+                    else -> closeArchive()
+                }
+                return true
+            }
+            Screen.VAULT -> {
+                lockVault(); return true
+            }
+            else -> {
+                screen = Screen.FILES; return true
+            }
         }
         val pane = active
         if (pane.selection.isNotEmpty()) {
@@ -385,7 +484,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (conflicts.isNotEmpty()) {
                 pendingTransfer = PendingTransfer(nodes, dest, move, conflicts)
             } else {
-                runTransfer(nodes, dest, move, if (sameDirCopy) ConflictPolicy.KEEP_BOTH else ConflictPolicy.OVERWRITE)
+                runTransfer(nodes, dest, move, if (sameDirCopy) ConflictPolicy.KEEP_BOTH else ConflictPolicy.OVERWRITE, allowUndo = true)
             }
         }
     }
@@ -393,16 +492,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun resolveConflict(policy: ConflictPolicy?) {
         val p = pendingTransfer ?: return
         pendingTransfer = null
-        if (policy != null) runTransfer(p.nodes, p.dest, p.move, policy)
+        if (policy != null) runTransfer(p.nodes, p.dest, p.move, policy, allowUndo = policy != ConflictPolicy.OVERWRITE)
     }
 
-    private fun runTransfer(nodes: List<Node>, dest: Node, move: Boolean, policy: ConflictPolicy) {
+    private fun parentOf(node: Node): Node? = (node as? LocalNode)?.file?.parentFile?.let { LocalNode.of(it) }
+
+    private fun runTransfer(nodes: List<Node>, dest: Node, move: Boolean, policy: ConflictPolicy, allowUndo: Boolean) {
         val verb = if (move) "Verschiebe" else "Kopiere"
         runOp("$verb ${nodes.size} ${if (nodes.size == 1) "Element" else "Elemente"}", measure = nodes) { sink ->
-            for (n in nodes) {
-                if (move) fs.move(n, dest, policy, sink) else fs.copy(n, dest, policy, sink)
+            val done = ArrayList<Pair<Node, Node?>>()
+            try {
+                for (n in nodes) {
+                    val origin = parentOf(n)
+                    val result = if (move) fs.move(n, dest, policy, sink) else fs.copy(n, dest, policy, sink)
+                    if (result != null) done += result to origin
+                }
+            } finally {
+                if (allowUndo && done.isNotEmpty()) {
+                    nextUndo = if (move) {
+                        if (done.all { it.second != null }) UndoAction {
+                            runOp("Verschiebe zurück", measure = null) { s2 ->
+                                done.forEach { (node, origin) -> fs.move(node, origin!!, ConflictPolicy.KEEP_BOTH, s2) }
+                                "Verschieben rückgängig gemacht"
+                            }
+                        } else null
+                    } else UndoAction {
+                        runOp("Entferne Kopien", measure = null) { s2 ->
+                            done.forEach { (node, _) -> s2.checkCancelled(); fs.delete(node) }
+                            "Kopieren rückgängig gemacht"
+                        }
+                    }
+                }
             }
-            "${if (move) "Verschoben" else "Kopiert"}: ${nodes.size}"
+            "${if (move) "Verschoben" else "Kopiert"}: ${done.size}"
         }
     }
 
@@ -419,19 +541,98 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun rename(pane: Pane, node: Node, newName: String) {
         pane.selection = emptySet()
-        simpleOp { fs.rename(node, newName.trim()); "Umbenannt" }
+        simpleOp {
+            val renamed = fs.rename(node, newName.trim())
+            nextUndo = UndoAction { simpleOp { fs.rename(renamed, node.name); "Umbenennung rückgängig gemacht" } }
+            "Umbenannt"
+        }
     }
 
     fun delete(pane: Pane, nodes: List<Node>, permanent: Boolean) {
         pane.selection = emptySet()
         val toTrash = !permanent && current.useTrash
         runOp(if (toTrash) "In den Papierkorb" else "Lösche", measure = null) { sink ->
-            for (n in nodes) {
-                sink.checkCancelled()
-                sink.onFile(n.name)
-                if (toTrash && n is LocalNode) trash.moveToTrash(n.file) else fs.delete(n)
+            val trashed = ArrayList<Trash.Entry>()
+            try {
+                for (n in nodes) {
+                    sink.checkCancelled()
+                    sink.onFile(n.name)
+                    if (toTrash && n is LocalNode) trash.moveToTrash(n.file)?.let { trashed += it } else fs.delete(n)
+                }
+            } finally {
+                if (trashed.isNotEmpty()) nextUndo = UndoAction {
+                    runOp("Stelle wieder her", measure = null) { _ ->
+                        trashed.forEach { trash.restore(it) }
+                        "Wiederhergestellt: ${trashed.size}"
+                    }
+                }
             }
             if (toTrash && nodes.all { it is LocalNode }) "${nodes.size} in den Papierkorb verschoben" else "${nodes.size} gelöscht"
+        }
+    }
+
+    /** Swipe-to-delete: goes straight to the trash (with undo) when possible. */
+    fun quickDelete(pane: Pane, node: Node): Boolean {
+        if (!current.useTrash || node !is LocalNode) return false
+        delete(pane, listOf(node), permanent = false)
+        return true
+    }
+
+    // ------------------------------------------------------------------ batch rename
+
+    fun batchNames(nodes: List<Node>, rule: RenameRule, dates: List<Long> = nodes.map { it.lastModified }): List<String> {
+        val digits = maxOf(2, (rule.start + nodes.size - 1).toString().length)
+        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.GERMAN)
+        val used = HashSet<String>()
+        return nodes.mapIndexed { i, n ->
+            val dot = n.name.lastIndexOf('.')
+            val hasExt = !n.isDirectory && dot > 0
+            val base = if (hasExt) n.name.substring(0, dot) else n.name
+            val ext = if (hasExt) n.name.substring(dot) else ""
+            val newBase = if (rule.replaceMode) {
+                if (rule.find.isEmpty()) base else base.replace(rule.find, rule.replace)
+            } else {
+                rule.pattern
+                    .replace("{name}", base)
+                    .replace("{n}", (rule.start + i).toString().padStart(digits, '0'))
+                    .replace("{date}", fmt.format(java.util.Date(dates[i])))
+            }.replace('/', '_').trim().ifEmpty { base }
+            var candidate = newBase + ext
+            var k = 1
+            while (!used.add(candidate.lowercase())) candidate = "$newBase ($k)$ext".also { k++ }
+            candidate
+        }
+    }
+
+    fun batchRename(pane: Pane, nodes: List<Node>, rule: RenameRule) {
+        pane.selection = emptySet()
+        runOp("Benenne ${nodes.size} Elemente um", measure = null) { sink ->
+            val dates = if (!rule.replaceMode && "{date}" in rule.pattern) nodes.map { FileInfo.captureDate(fs, it) } else nodes.map { it.lastModified }
+            val names = batchNames(nodes, rule, dates)
+            val stamp = System.currentTimeMillis()
+            // Two phases so that swapping names inside the batch cannot collide.
+            val temps = nodes.mapIndexed { i, n ->
+                sink.checkCancelled()
+                if (names[i] == n.name) n else fs.rename(n, ".voidtmp_${stamp}_$i")
+            }
+            val done = ArrayList<Pair<Node, String>>()
+            temps.forEachIndexed { i, t ->
+                sink.onFile(names[i])
+                val renamed = if (t.name == names[i]) t else {
+                    val parent = parentOf(t) ?: pane.current
+                    val name = if (fs.findChild(parent, names[i]) != null) fs.uniqueName(parent, names[i]) else names[i]
+                    fs.rename(t, name)
+                }
+                if (renamed.name != nodes[i].name) done += renamed to nodes[i].name
+            }
+            if (done.isNotEmpty()) nextUndo = UndoAction {
+                runOp("Umbenennen rückgängig", measure = null) { _ ->
+                    val back = done.mapIndexed { i, (n, _) -> fs.rename(n, ".voidtmp_undo_${stamp}_$i") }
+                    back.forEachIndexed { i, t -> fs.rename(t, done[i].second) }
+                    "Umbenennen rückgängig gemacht"
+                }
+            }
+            "${done.size} umbenannt"
         }
     }
 
@@ -531,11 +732,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             is SafNode -> Uri.decode(node.documentId)
         }
         properties = Properties(node, path, if (node.isDirectory) null else node.size, if (node.isDirectory) null else 1)
+        if (!node.isDirectory) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val details = FileInfo.details(getApplication(), fs, node)
+                if (properties?.node?.id == node.id) properties = properties?.copy(details = details)
+            }
+        }
         if (node.isDirectory) {
             viewModelScope.launch(Dispatchers.IO) {
                 val (bytes, count) = runCatching { fs.measure(node) }.getOrDefault(0L to 0)
                 if (properties?.node?.id == node.id) properties = properties?.copy(size = bytes, files = count)
             }
+        }
+    }
+
+    fun computeChecksums(node: Node) {
+        properties = properties?.copy(hashing = true)
+        viewModelScope.launch(Dispatchers.IO) {
+            val md5 = runCatching { FileInfo.checksum(fs, node, "MD5") }.getOrElse { "Fehler: ${it.message}" }
+            val sha = runCatching { FileInfo.checksum(fs, node, "SHA-256") }.getOrElse { "Fehler: ${it.message}" }
+            if (properties?.node?.id == node.id) properties = properties?.copy(md5 = md5, sha256 = sha, hashing = false)
         }
     }
 
@@ -609,14 +825,283 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun simpleOp(block: () -> String) {
         viewModelScope.launch {
-            val msg = withContext(Dispatchers.IO) { runCatching { block() }.getOrElse { it.message ?: "Fehler" } }
-            message(msg)
+            var undo: UndoAction? = null
+            val msg = withContext(Dispatchers.IO) {
+                nextUndo = null
+                runCatching { block().also { undo = nextUndo } }.getOrElse { it.message ?: "Fehler" }.also { nextUndo = null }
+            }
+            message(msg, undo)
             reloadAll()
         }
     }
 
     fun cancelOp() {
         opJob?.cancel()
+    }
+
+    // ------------------------------------------------------------------ intents (shortcuts)
+
+    fun handleIntent(intent: Intent) {
+        if (intent.action == ACTION_OPEN_FOLDER) {
+            val path = intent.getStringExtra(EXTRA_PATH) ?: return
+            val f = File(path)
+            if (f.isDirectory) openLocal(active, f) else message("Ordner nicht gefunden: $path")
+        } else {
+            receiveShare(intent)
+        }
+    }
+
+    // ------------------------------------------------------------------ viewer
+
+    fun previewKindOf(node: Node): PreviewKind? {
+        if (node.isDirectory) return null
+        val mime = node.mimeType
+        val ext = node.extension
+        return when {
+            mime.startsWith("image/") && ext != "svg" -> PreviewKind.IMAGE
+            ext == "pdf" -> PreviewKind.PDF
+            mime.startsWith("video/") || mime.startsWith("audio/") -> PreviewKind.MEDIA
+            mime.startsWith("text/") || ext in TEXT_EXTENSIONS -> PreviewKind.TEXT
+            else -> null
+        }
+    }
+
+    fun openViewer(node: Node, siblings: List<Node>) {
+        val kind = previewKindOf(node)
+        if (kind == null) {
+            events.trySend(UiEvent.Open(node)); return
+        }
+        var files = if (kind == PreviewKind.IMAGE) siblings.filter { previewKindOf(it) == PreviewKind.IMAGE } else listOf(node)
+        var index = files.indexOfFirst { it.id == node.id }
+        if (index < 0) {
+            files = listOf(node); index = 0
+        }
+        val returnTo = if (screen == Screen.VIEWER) (viewer?.returnTo ?: Screen.FILES) else screen
+        viewer = ViewerState(files, index, returnTo)
+        screen = Screen.VIEWER
+    }
+
+    fun closeViewer() {
+        screen = viewer?.returnTo ?: Screen.FILES
+        viewer = null
+    }
+
+    fun openExternally(node: Node) {
+        events.trySend(UiEvent.Open(node))
+    }
+
+    fun saveText(node: Node, text: String, onSaved: () -> Unit) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { fs.openOutput(node).use { it.write(text.toByteArray()) } }
+            }
+            result.onSuccess {
+                message("Gespeichert")
+                onSaved()
+            }.onFailure { message("Speichern fehlgeschlagen: ${it.message}") }
+        }
+    }
+
+    // ------------------------------------------------------------------ archive browsing
+
+    fun openArchive(node: Node, password: String? = null, dir: String = "") {
+        runOp("Öffne ${node.name}", measure = null) { _ ->
+            try {
+                val listing = ArchiveBrowser.open(fs, node, getApplication<Application>().cacheDir, password)
+                archiveView?.listing?.close()
+                archiveView = ArchiveView(listing, dir = dir)
+                screen = Screen.ARCHIVE
+                null
+            } catch (e: Exception) {
+                if (e is PasswordRequired || e.message == "Falsches Passwort") {
+                    pendingPassword = PendingPassword(node, node, false, wrong = password != null, browse = true, browseDir = dir)
+                    null
+                } else throw e
+            }
+        }
+    }
+
+    fun closeArchive() {
+        archiveView?.listing?.close()
+        archiveView = null
+        screen = Screen.FILES
+    }
+
+    fun archiveEnter(item: ArchiveItem) {
+        val v = archiveView ?: return
+        if (v.selection.isNotEmpty()) {
+            archiveToggle(item); return
+        }
+        if (item.isDirectory) archiveView = v.copy(dir = item.path) else previewArchiveItem(item)
+    }
+
+    fun archiveToggle(item: ArchiveItem) {
+        val v = archiveView ?: return
+        archiveView = v.copy(selection = if (item.path in v.selection) v.selection - item.path else v.selection + item.path)
+    }
+
+    fun archiveSelectAll() {
+        val v = archiveView ?: return
+        archiveView = v.copy(selection = v.listing.list(v.dir).mapTo(HashSet()) { it.path })
+    }
+
+    fun archiveGoTo(dir: String) {
+        val v = archiveView ?: return
+        archiveView = v.copy(dir = dir, selection = emptySet())
+    }
+
+    /** Extracts the selection (or everything in the current folder) into the active pane's folder. */
+    fun extractFromArchive(all: Boolean) {
+        val v = archiveView ?: return
+        val items = if (all || v.selection.isEmpty()) v.listing.list(v.dir) else v.listing.list(v.dir).filter { it.path in v.selection }
+        val dest = active.current
+        archiveView = v.copy(selection = emptySet())
+        runOp("Entpacke ${items.size} ${if (items.size == 1) "Element" else "Elemente"}", measure = null) { sink ->
+            try {
+                ArchiveBrowser.extract(fs, v.listing, items, v.dir, dest, sink)
+            } catch (e: PasswordRequired) {
+                pendingPassword = PendingPassword(v.listing.archive, dest, false, wrong = false, browse = true, browseDir = v.dir)
+                return@runOp "Passwort erforderlich"
+            }
+            "Entpackt nach ${dest.name}"
+        }
+    }
+
+    private fun previewArchiveItem(item: ArchiveItem) {
+        val v = archiveView ?: return
+        val dir = File(getApplication<Application>().cacheDir, "archive_preview")
+        runOp("Öffne ${item.name}", measure = null) { sink ->
+            dir.deleteRecursively()
+            dir.mkdirs()
+            val parent = item.parent
+            ArchiveBrowser.extract(fs, v.listing, listOf(item), parent, LocalNode.of(dir), sink)
+            val file = LocalNode.of(File(dir, item.name))
+            viewModelScope.launch {
+                if (current.internalViewer && previewKindOf(file) != null) openViewer(file, listOf(file)) else openExternally(file)
+            }
+            null
+        }
+    }
+
+    // ------------------------------------------------------------------ storage analysis
+
+    fun startAnalysis(volume: app.voidfiles.data.StorageVolumeInfo) {
+        analysisJob?.cancel()
+        analysis = AnalysisUi(running = true, status = "Starte …", volume = volume.label)
+        analysisJob = viewModelScope.launch(Dispatchers.IO) {
+            val self = coroutineContext.job
+            val result = runCatching {
+                Analyzer.analyze(volume.root, volume.total, volume.free, { count, where ->
+                    analysis = analysis.copy(count = count, status = where)
+                }, { !self.isActive })
+            }
+            analysis = if (result.isSuccess && self.isActive) {
+                AnalysisUi(running = false, count = result.getOrThrow().fileCount, volume = volume.label, result = result.getOrThrow())
+            } else {
+                analysis.copy(running = false, status = result.exceptionOrNull()?.message ?: "Abgebrochen")
+            }
+        }
+    }
+
+    fun cancelAnalysis() {
+        analysisJob?.cancel()
+        analysis = analysis.copy(running = false)
+    }
+
+    /** Deletes a file listed in the analysis and removes it from the results. */
+    fun analysisDelete(node: LocalNode) {
+        val toTrash = current.useTrash
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { if (toTrash) trash.moveToTrash(node.file) else fs.delete(node) }.isSuccess
+            }
+            if (!ok) {
+                message("\"${node.name}\" konnte nicht gelöscht werden"); return@launch
+            }
+            message(if (toTrash) "In den Papierkorb verschoben" else "Gelöscht")
+            val r = analysis.result ?: return@launch
+            analysis = analysis.copy(
+                result = r.copy(
+                    largest = r.largest.filterNot { it.id == node.id },
+                    duplicates = r.duplicates.map { g -> g.copy(files = g.files.filterNot { it.id == node.id }) }.filter { it.files.size > 1 },
+                ),
+            )
+        }
+    }
+
+    // ------------------------------------------------------------------ vault
+
+    private val vaultTemp: File get() = File(getApplication<Application>().cacheDir, "vault_open")
+
+    /** Called by the UI after a successful biometric / device credential check. */
+    fun unlockVault() {
+        vaultTemp.deleteRecursively()
+        vaultUnlocked = true
+        screen = Screen.VAULT
+        loadVault()
+    }
+
+    fun lockVault() {
+        if (!vaultUnlocked) return
+        vaultUnlocked = false
+        vaultEntries = emptyList()
+        if (screen == Screen.VAULT) screen = Screen.FILES
+        if (screen == Screen.VIEWER && viewer?.returnTo == Screen.VAULT) {
+            viewer = null; screen = Screen.FILES
+        }
+    }
+
+    private fun loadVault() {
+        viewModelScope.launch(Dispatchers.IO) {
+            vaultEntries = runCatching { vault.entries() }.getOrElse {
+                message("Tresor konnte nicht gelesen werden: ${it.message}"); emptyList()
+            }
+        }
+    }
+
+    fun moveToVault(pane: Pane, nodes: List<Node>) {
+        val files = nodes.filterNot { it.isDirectory }
+        if (files.isEmpty()) {
+            message("Ordner bitte zuerst als ZIP komprimieren"); return
+        }
+        pane.selection = emptySet()
+        runOp("Verschlüssele ${files.size} ${if (files.size == 1) "Datei" else "Dateien"}", measure = files) { sink ->
+            for (n in files) {
+                val origin = (n as? LocalNode)?.file?.parent ?: pane.current.name
+                vault.add(fs, n, origin, sink)
+                fs.delete(n)
+            }
+            val skipped = nodes.size - files.size
+            "${files.size} im Tresor" + if (skipped > 0) " · $skipped Ordner übersprungen" else ""
+        }
+    }
+
+    fun vaultOpen(entry: VaultEntry) {
+        viewModelScope.launch {
+            val file = withContext(Dispatchers.IO) { runCatching { vault.decryptToTemp(entry, vaultTemp) } }
+            file.onSuccess {
+                val node = LocalNode.of(it)
+                if (current.internalViewer && previewKindOf(node) != null) openViewer(node, listOf(node)) else openExternally(node)
+            }.onFailure { message("Entschlüsseln fehlgeschlagen: ${it.message}") }
+        }
+    }
+
+    fun vaultRestore(entry: VaultEntry) {
+        val dest = active.current
+        runOp("Entschlüssele ${entry.name}", measure = null) { sink ->
+            vault.export(fs, entry, dest, sink)
+            vault.remove(entry)
+            vaultEntries = vault.entries()
+            "Wiederhergestellt nach ${dest.name}"
+        }
+    }
+
+    fun vaultDelete(entry: VaultEntry) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { vault.remove(entry) }
+            vaultEntries = runCatching { vault.entries() }.getOrDefault(emptyList())
+            message("Endgültig gelöscht")
+        }
     }
 
     // ------------------------------------------------------------------ receiving shared files
@@ -738,6 +1223,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             var ok = false
+            nextUndo = null
             val result = try {
                 if (measure != null) {
                     sink.total = measure.sumOf { runCatching { fs.measure(it, sink).first }.getOrDefault(0L) }
@@ -750,10 +1236,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 e.message ?: e.javaClass.simpleName
             }
             op = null
-            if (result != null) message(result)
+            val undo = nextUndo.also { nextUndo = null }
+            if (result != null) message(result, if (ok) undo else null)
             withContext(NonCancellable + Dispatchers.Main) {
                 reloadAll()
-                if (ok) onSuccess?.invoke()
+                if (ok) {
+                    if (result != null) glyphTick++
+                    onSuccess?.invoke()
+                }
             }
         }
         opJob = job

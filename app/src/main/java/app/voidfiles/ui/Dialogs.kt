@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -50,6 +51,8 @@ sealed interface Dlg {
     data class Compress(val pane: Pane, val nodes: List<Node>) : Dlg
     data class ArchiveAction(val node: Node) : Dlg
     data class Sort(val pane: Pane) : Dlg
+    data class BatchRename(val pane: Pane, val nodes: List<Node>) : Dlg
+    data class MoveToVault(val pane: Pane, val nodes: List<Node>) : Dlg
 }
 
 @Composable
@@ -206,10 +209,12 @@ fun ArchiveDialog(
     onExtractFolder: () -> Unit,
     onExtractOther: () -> Unit,
     onOpenWith: () -> Unit,
+    onBrowse: () -> Unit,
 ) {
     VoidDialog(node.name, onDismiss, null, {}) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Pill("In Ordner entpacken", selected = true, onClick = onExtractFolder)
+            Pill("Inhalt ansehen", selected = true, onClick = onBrowse)
+            Pill("In Ordner entpacken", selected = false, onClick = onExtractFolder)
             Pill("Hier entpacken", selected = false, onClick = onExtractHere)
             if (dualPane) Pill("In anderes Fenster entpacken", selected = false, onClick = onExtractOther)
             Pill("Öffnen mit …", selected = false, onClick = onOpenWith)
@@ -255,7 +260,7 @@ fun SortDialog(
 }
 
 @Composable
-fun PropertiesDialog(p: Properties, onDismiss: () -> Unit) {
+fun PropertiesDialog(p: Properties, onDismiss: () -> Unit, onChecksums: () -> Unit) {
     val c = VoidTheme.colors
     VoidDialog("Eigenschaften", onDismiss, null, {}, dismissText = "Schließen") {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -274,6 +279,87 @@ fun PropertiesDialog(p: Properties, onDismiss: () -> Unit) {
                     if (f.isHidden) append(" · versteckt")
                 })
             }
+            p.details.forEach { (label, value) -> PropRow(label, value) }
+            if (!p.node.isDirectory) {
+                Column {
+                    Label("Prüfsummen")
+                    when {
+                        p.md5 != null -> {
+                            SelectionContainer {
+                                Column {
+                                    Text("MD5  ${p.md5}", color = c.text, style = MaterialTheme.typography.labelSmall)
+                                    Spacer(Modifier.height(4.dp))
+                                    Text("SHA-256  ${p.sha256}", color = c.text, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                        p.hashing -> DotLoader(Modifier.fillMaxWidth().height(12.dp))
+                        else -> Pill("MD5 / SHA-256 berechnen", selected = false, onClick = onChecksums)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun BatchRenameDialog(
+    nodes: List<Node>,
+    preview: (RenameRule) -> List<String>,
+    onDismiss: () -> Unit,
+    onConfirm: (RenameRule) -> Unit,
+) {
+    val c = VoidTheme.colors
+    var rule by remember { mutableStateOf(RenameRule()) }
+    var startText by remember { mutableStateOf("1") }
+    val names = remember(rule) { preview(rule) }
+    val valid = if (rule.replaceMode) rule.find.isNotEmpty() else rule.pattern.isNotBlank()
+    VoidDialog("${nodes.size} umbenennen", onDismiss, "Umbenennen", { onConfirm(rule) }, confirmEnabled = valid) {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill("Muster", !rule.replaceMode, { rule = rule.copy(replaceMode = false) })
+                Pill("Ersetzen", rule.replaceMode, { rule = rule.copy(replaceMode = true) })
+            }
+            if (!rule.replaceMode) {
+                OutlinedTextField(
+                    value = rule.pattern, onValueChange = { rule = rule.copy(pattern = it) }, singleLine = true,
+                    label = { Text("Muster") }, modifier = Modifier.fillMaxWidth(),
+                )
+                Label("{name} = alter Name · {n} = Nummer · {date} = Datum (Fotos: Aufnahme)")
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("Urlaub_{n}", "{date}_{n}", "{name}_{n}").forEach { preset ->
+                        Pill(preset, rule.pattern == preset, { rule = rule.copy(pattern = preset) })
+                    }
+                }
+                OutlinedTextField(
+                    value = startText,
+                    onValueChange = { v ->
+                        startText = v.filter { it.isDigit() }.take(6)
+                        rule = rule.copy(start = startText.toIntOrNull() ?: 1)
+                    },
+                    singleLine = true, label = { Text("Startnummer") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                OutlinedTextField(
+                    value = rule.find, onValueChange = { rule = rule.copy(find = it) }, singleLine = true,
+                    label = { Text("Suchen") }, modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = rule.replace, onValueChange = { rule = rule.copy(replace = it) }, singleLine = true,
+                    label = { Text("Ersetzen durch") }, modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Label("Vorschau")
+            nodes.take(4).forEachIndexed { i, n ->
+                Column {
+                    Text(n.name, color = c.textMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                    Text("→ ${names.getOrElse(i) { n.name }}", color = c.text, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                }
+            }
+            if (nodes.size > 4) Label("… und ${nodes.size - 4} weitere")
         }
     }
 }

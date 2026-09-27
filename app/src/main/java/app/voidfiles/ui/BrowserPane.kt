@@ -30,7 +30,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AddToHomeScreen
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudUpload
@@ -62,12 +64,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -120,12 +126,10 @@ fun BrowserPane(
         if (pane.selection.isNotEmpty()) {
             SelectionHeader(vm, pane, launcher, compact, onDialog)
         } else {
-            PaneHeader(vm, pane, settings, active, compact, onMenu, onDialog)
+            PaneHeader(vm, pane, settings, active, compact, launcher, onMenu, onDialog)
         }
-        Box(Modifier.fillMaxWidth().height(2.dp)) {
-            if (pane.loading || pane.search?.running == true) {
-                LinearProgressIndicator(Modifier.fillMaxSize(), color = c.accent, trackColor = Color.Transparent)
-            }
+        Box(Modifier.fillMaxWidth().height(6.dp)) {
+            if (pane.loading || pane.search?.running == true) DotLoader(Modifier.fillMaxSize())
         }
         // Show the pull-to-refresh spinner only until the reload has finished.
         var refreshing by remember { mutableStateOf(false) }
@@ -144,7 +148,7 @@ fun BrowserPane(
             },
             modifier = Modifier.weight(1f).fillMaxWidth(),
         ) {
-            PaneContent(vm, pane, settings, compact)
+            PaneContent(vm, pane, settings, compact, onDialog)
         }
     }
 }
@@ -156,6 +160,7 @@ private fun PaneHeader(
     settings: AppSettings,
     active: Boolean,
     compact: Boolean,
+    launcher: Launcher,
     onMenu: (() -> Unit)?,
     onDialog: (Dlg) -> Unit,
 ) {
@@ -197,6 +202,11 @@ private fun PaneHeader(
                         MenuItem(if (marked) "Aus Schnellzugriff entfernen" else "Zum Schnellzugriff",
                             if (marked) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder) {
                             menu = false; vm.toggleQuickAccess(cur)
+                        }
+                    }
+                    if (cur is LocalNode) {
+                        MenuItem("Verknüpfung auf Startbildschirm", Icons.Outlined.AddToHomeScreen) {
+                            menu = false; launcher.pinFolderShortcut(cur.file)
                         }
                     }
                     MenuItem("Eigenschaften", Icons.Outlined.Info) { menu = false; vm.showProperties(pane.current) }
@@ -305,7 +315,13 @@ private fun SelectionHeader(vm: MainViewModel, pane: Pane, launcher: Launcher, c
                         if (single.isDirectory && single is LocalNode) {
                             MenuItem(if (vm.isQuickAccess(single)) "Aus Schnellzugriff entfernen" else "Zum Schnellzugriff",
                                 Icons.Outlined.BookmarkBorder) { more = false; vm.toggleQuickAccess(single); vm.clearSelection(pane) }
+                            MenuItem("Verknüpfung auf Startbildschirm", Icons.Outlined.AddToHomeScreen) {
+                                more = false; launcher.pinFolderShortcut(single.file); vm.clearSelection(pane)
+                            }
                         }
+                    }
+                    if (selected.any { !it.isDirectory }) {
+                        MenuItem("In Tresor verschieben", Icons.Outlined.Lock) { more = false; onDialog(Dlg.MoveToVault(pane, selected)) }
                     }
                     MenuItem("An Proton Drive senden", Icons.Outlined.CloudUpload) {
                         more = false; launcher.sendToProton(selected); vm.clearSelection(pane)
@@ -320,8 +336,8 @@ private fun SelectionHeader(vm: MainViewModel, pane: Pane, launcher: Launcher, c
             ActionButton("Kopieren", Icons.Outlined.ContentCopy) { vm.copyToClipboard(pane, cut = false) }
             ActionButton("Ausschn.", Icons.Outlined.ContentCut) { vm.copyToClipboard(pane, cut = true) }
             ActionButton("Löschen", Icons.Outlined.Delete) { onDialog(Dlg.Delete(pane, selected)) }
-            if (single != null) {
-                ActionButton("Umbenennen", Icons.Outlined.DriveFileRenameOutline) { onDialog(Dlg.Rename(pane, single)) }
+            ActionButton("Umbenennen", Icons.Outlined.DriveFileRenameOutline) {
+                if (single != null) onDialog(Dlg.Rename(pane, single)) else onDialog(Dlg.BatchRename(pane, selected))
             }
             ActionButton("Teilen", Icons.Outlined.Share) { launcher.share(selected) }
             ActionButton("ZIP", Icons.Outlined.FolderZip) { onDialog(Dlg.Compress(pane, selected)) }
@@ -357,7 +373,9 @@ fun MenuItem(text: String, icon: ImageVector, onClick: () -> Unit) {
 }
 
 @Composable
-private fun PaneContent(vm: MainViewModel, pane: Pane, settings: AppSettings, compact: Boolean) {
+private fun PaneContent(vm: MainViewModel, pane: Pane, settings: AppSettings, compact: Boolean, onDialog: (Dlg) -> Unit) {
+    val swipeLeft: (Node) -> Unit = { node -> if (!vm.quickDelete(pane, node)) onDialog(Dlg.Delete(pane, listOf(node))) }
+    val swipeRight: (Node) -> Unit = { node -> vm.toggleSelect(pane, node) }
     val items = pane.visible
     val bottomPad = PaddingValues(bottom = 120.dp)
     when {
@@ -384,25 +402,76 @@ private fun PaneContent(vm: MainViewModel, pane: Pane, settings: AppSettings, co
                     Label(day, Modifier.padding(start = if (compact) 12.dp else 20.dp, top = 14.dp, bottom = 4.dp), color = VoidTheme.colors.accent)
                 }
                 items(files, key = { it.id }) { node ->
+                    SwipeRow(settings.swipeGestures, { swipeLeft(node) }, { swipeRight(node) }) {
+                        FileRow(
+                            node, node.id in pane.selection, settings.thumbnails, compact,
+                            subtitle = "${formatSize(node.size)}  ·  ${timeOf(node.lastModified)}  ·  ${parentHint(node)}",
+                            onClick = { vm.openNode(pane, node) },
+                            onLongClick = { vm.toggleSelect(pane, node) },
+                        )
+                    }
+                }
+            }
+        }
+        else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = bottomPad) {
+            items(items, key = { it.id }) { node ->
+                SwipeRow(settings.swipeGestures, { swipeLeft(node) }, { swipeRight(node) }) {
                     FileRow(
                         node, node.id in pane.selection, settings.thumbnails, compact,
-                        subtitle = "${formatSize(node.size)}  ·  ${timeOf(node.lastModified)}  ·  ${parentHint(node)}",
+                        subtitle = if (pane.search != null) parentHint(node) else null,
                         onClick = { vm.openNode(pane, node) },
                         onLongClick = { vm.toggleSelect(pane, node) },
                     )
                 }
             }
         }
-        else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = bottomPad) {
-            items(items, key = { it.id }) { node ->
-                FileRow(
-                    node, node.id in pane.selection, settings.thumbnails, compact,
-                    subtitle = if (pane.search != null) parentHint(node) else null,
-                    onClick = { vm.openNode(pane, node) },
-                    onLongClick = { vm.toggleSelect(pane, node) },
-                )
+    }
+}
+
+/** Swipe left = delete, swipe right = select. The row snaps back after the action. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeRow(enabled: Boolean, onSwipeLeft: () -> Unit, onSwipeRight: () -> Unit, content: @Composable () -> Unit) {
+    if (!enabled) {
+        content(); return
+    }
+    val c = VoidTheme.colors
+    val left by rememberUpdatedState(onSwipeLeft)
+    val right by rememberUpdatedState(onSwipeRight)
+    val state = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            when (value) {
+                SwipeToDismissBoxValue.EndToStart -> left()
+                SwipeToDismissBoxValue.StartToEnd -> right()
+                SwipeToDismissBoxValue.Settled -> Unit
             }
-        }
+            false
+        },
+    )
+    SwipeToDismissBox(
+        state = state,
+        backgroundContent = {
+            val direction = state.dismissDirection
+            val isDelete = direction == SwipeToDismissBoxValue.EndToStart
+            Row(
+                Modifier.fillMaxSize()
+                    .background(if (direction == SwipeToDismissBoxValue.Settled) Color.Transparent else if (isDelete) c.accent else c.surfaceHigh)
+                    .padding(horizontal = 24.dp),
+                horizontalArrangement = if (isDelete) Arrangement.End else Arrangement.Start,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (direction != SwipeToDismissBoxValue.Settled) {
+                    Icon(
+                        if (isDelete) Icons.Outlined.Delete else Icons.Rounded.Check, null,
+                        tint = if (isDelete) c.onAccent else c.text,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Label(if (isDelete) "Löschen" else "Auswählen", color = if (isDelete) c.onAccent else c.text)
+                }
+            }
+        },
+    ) {
+        Box(Modifier.fillMaxWidth().background(c.background)) { content() }
     }
 }
 

@@ -9,6 +9,9 @@ import android.net.Uri
 import android.provider.Settings
 import android.widget.Toast
 import androidx.core.content.FileProvider
+import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.content.pm.ShortcutManagerCompat
+import androidx.core.graphics.drawable.IconCompat
 import app.voidfiles.data.LocalNode
 import app.voidfiles.data.Node
 import app.voidfiles.data.SafNode
@@ -90,6 +93,24 @@ class Launcher(private val context: Context) {
                 .setDataAndType(uri, "application/vnd.android.package-archive")
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
         )
+    }
+
+    /** Pins a home screen shortcut that opens [folder] directly. */
+    fun pinFolderShortcut(folder: File) {
+        if (!ShortcutManagerCompat.isRequestPinShortcutSupported(context)) {
+            toast("Der Launcher unterstützt keine Verknüpfungen"); return
+        }
+        val intent = Intent(context, app.voidfiles.MainActivity::class.java)
+            .setAction(ACTION_OPEN_FOLDER)
+            .putExtra(EXTRA_PATH, folder.absolutePath)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        val info = ShortcutInfoCompat.Builder(context, "folder:" + folder.absolutePath)
+            .setShortLabel(folder.name.ifEmpty { "Speicher" })
+            .setLongLabel("VOID · " + folder.name.ifEmpty { "Speicher" })
+            .setIcon(IconCompat.createWithResource(context, app.voidfiles.R.mipmap.ic_shortcut_folder))
+            .setIntent(intent)
+            .build()
+        if (!ShortcutManagerCompat.requestPinShortcut(context, info, null)) toast("Verknüpfung konnte nicht erstellt werden")
     }
 
     fun openProtonApp() {

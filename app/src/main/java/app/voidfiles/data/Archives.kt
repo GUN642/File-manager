@@ -223,7 +223,7 @@ object Archives {
     }
 
     /** Writes archive entries below a destination, creating folders on demand and blocking path traversal. */
-    private class EntryWriter(private val fs: FileSystem, private val root: Node, private val sink: ProgressSink) {
+    internal class EntryWriter(private val fs: FileSystem, private val root: Node, private val sink: ProgressSink) {
         private val dirs = HashMap<String, Node>()
 
         private fun segments(path: String): List<String> {

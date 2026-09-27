@@ -8,7 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -44,7 +44,7 @@ import app.voidfiles.ui.theme.VoidFilesTheme
 import app.voidfiles.ui.theme.VoidTheme
 import app.voidfiles.ui.theme.headingStyle
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private val vm: MainViewModel by viewModels()
     private var hasAccess by mutableStateOf(false)
 
@@ -52,7 +52,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         hasAccess = checkAccess()
-        if (savedInstanceState == null) vm.receiveShare(intent)
+        if (savedInstanceState == null) vm.handleIntent(intent)
         setContent {
             val settings by vm.settings.collectAsStateWithLifecycle()
             VoidFilesTheme(settings.theme, settings.accent, settings.dotHeadings, settings.dotGrid) {
@@ -68,7 +68,13 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        vm.receiveShare(intent)
+        vm.handleIntent(intent)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // The vault locks as soon as the app leaves the screen.
+        if (!isChangingConfigurations) vm.lockVault()
     }
 
     override fun onResume() {

@@ -119,13 +119,15 @@ class Trash(private val context: Context) {
     fun allTrashDirs(): List<File> =
         Storage.volumes(context).map { File(it.root, ".VoidTrash") }.filter { it.isDirectory }
 
-    fun moveToTrash(file: File) {
+    /** Moves [file] to the trash; returns the entry so the move can be undone (null if deleted directly). */
+    fun moveToTrash(file: File): Entry? {
         val dir = trashDirFor(file)
         if (file.absolutePath.startsWith(dir.absolutePath)) {
             if (!file.deleteRecursively()) throw IOException("Löschen fehlgeschlagen")
-            return
+            return null
         }
-        val id = "${System.currentTimeMillis()}_${(0..9999).random()}"
+        val now = System.currentTimeMillis()
+        val id = "${now}_${(0..9999).random()}"
         val stored = File(dir, id)
         if (!file.renameTo(stored)) {
             // Different mount point: copy then delete.
@@ -133,6 +135,7 @@ class Trash(private val context: Context) {
             if (!file.deleteRecursively()) throw IOException("\"${file.name}\" konnte nicht gelöscht werden")
         }
         File(dir, "$id.meta").writeText(file.absolutePath)
+        return Entry(stored, file.absolutePath, now)
     }
 
     fun entries(): List<Entry> = allTrashDirs().flatMap { dir ->

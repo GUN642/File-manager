@@ -76,11 +76,13 @@ fun formatDate(ms: Long): String = if (ms <= 0) "—" else dateFormat.format(Dat
 
 enum class Kind { FOLDER, IMAGE, VIDEO, AUDIO, ARCHIVE, APK, PDF, DOC, SHEET, SLIDES, CODE, TEXT, OTHER }
 
-fun kindOf(node: Node): Kind {
-    if (node.isDirectory) return Kind.FOLDER
-    val ext = node.extension
-    if (Archives.isArchive(node.name)) return Kind.ARCHIVE
-    val mime = node.mimeType
+fun kindOf(node: Node): Kind = kindFor(node.name, node.isDirectory, node.mimeType)
+
+fun kindFor(name: String, isDirectory: Boolean, mimeType: String = Node.mimeFromName(name)): Kind {
+    if (isDirectory) return Kind.FOLDER
+    val ext = name.substringAfterLast('.', "").lowercase()
+    if (Archives.isArchive(name)) return Kind.ARCHIVE
+    val mime = mimeType
     return when {
         ext == "apk" -> Kind.APK
         ext == "pdf" -> Kind.PDF

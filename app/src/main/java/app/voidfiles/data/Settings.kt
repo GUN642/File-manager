@@ -61,6 +61,8 @@ data class AppSettings(
     val thumbnails: Boolean = true,
     val dotGrid: Boolean = true,
     val autoUpdateCheck: Boolean = true,
+    val internalViewer: Boolean = true,
+    val swipeGestures: Boolean = true,
     /** Ordered folder paths shown under "Schnellzugriff". */
     val quickAccess: List<String> = emptyList(),
     val cloudRoots: List<CloudRoot> = emptyList(),
@@ -84,6 +86,8 @@ class SettingsRepository(private val context: Context) {
         val thumbnails = booleanPreferencesKey("thumbnails")
         val dotGrid = booleanPreferencesKey("dot_grid")
         val autoUpdate = booleanPreferencesKey("auto_update")
+        val internalViewer = booleanPreferencesKey("internal_viewer")
+        val swipe = booleanPreferencesKey("swipe_gestures")
         val bookmarks = stringSetPreferencesKey("bookmarks")
         val quickAccess = stringPreferencesKey("quick_access")
         val cloudRoots = stringSetPreferencesKey("cloud_roots")
@@ -109,6 +113,8 @@ class SettingsRepository(private val context: Context) {
             thumbnails = p[K.thumbnails] ?: d.thumbnails,
             dotGrid = p[K.dotGrid] ?: d.dotGrid,
             autoUpdateCheck = p[K.autoUpdate] ?: d.autoUpdateCheck,
+            internalViewer = p[K.internalViewer] ?: d.internalViewer,
+            swipeGestures = p[K.swipe] ?: d.swipeGestures,
             quickAccess = p[K.quickAccess]?.split('\n')?.filter { it.isNotBlank() }
                 ?: (Storage.defaultQuickPaths() + (p[K.bookmarks] ?: emptySet()).sorted()).distinct(),
             cloudRoots = (p[K.cloudRoots] ?: emptySet()).mapNotNull { CloudRoot.decode(it) }.sortedBy { it.label.lowercase() },
@@ -131,6 +137,8 @@ class SettingsRepository(private val context: Context) {
     suspend fun setThumbnails(v: Boolean) = context.dataStore.edit { it[K.thumbnails] = v }
     suspend fun setDotGrid(v: Boolean) = context.dataStore.edit { it[K.dotGrid] = v }
     suspend fun setAutoUpdate(v: Boolean) = context.dataStore.edit { it[K.autoUpdate] = v }
+    suspend fun setInternalViewer(v: Boolean) = context.dataStore.edit { it[K.internalViewer] = v }
+    suspend fun setSwipeGestures(v: Boolean) = context.dataStore.edit { it[K.swipe] = v }
 
     private fun Preferences.quickList(): List<String> = this[K.quickAccess]?.split('\n')?.filter { it.isNotBlank() }
         ?: (Storage.defaultQuickPaths() + (this[K.bookmarks] ?: emptySet()).sorted()).distinct()

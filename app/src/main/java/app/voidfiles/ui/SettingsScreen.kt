@@ -118,6 +118,12 @@ fun SettingsScreen(vm: MainViewModel, s: AppSettings, onBack: () -> Unit) {
             Group("Dateien")
             Toggle("Versteckte Dateien", "Dateien mit Punkt am Anfang anzeigen", s.showHidden) { v -> vm.update { setShowHidden(v) } }
             Toggle("Ordner zuerst", null, s.foldersFirst) { v -> vm.update { setFoldersFirst(v) } }
+            Toggle("Interne Vorschau", "Bilder, Texte, PDFs und Medien direkt in VOID Files öffnen", s.internalViewer) { v ->
+                vm.update { setInternalViewer(v) }
+            }
+            Toggle("Wischgesten", "Nach links wischen = löschen, nach rechts = auswählen", s.swipeGestures) { v ->
+                vm.update { setSwipeGestures(v) }
+            }
             Toggle("Papierkorb verwenden", "Gelöschte Dateien zuerst in den Papierkorb", s.useTrash) { v -> vm.update { setUseTrash(v) } }
 
             Group("Querformat")
