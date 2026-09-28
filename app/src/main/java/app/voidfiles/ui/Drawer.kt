@@ -34,6 +34,8 @@ import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.SdCard
+import androidx.compose.material.icons.outlined.Usb
+import androidx.compose.material.icons.outlined.Eject
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.Icon
@@ -58,6 +60,7 @@ import app.voidfiles.data.AppSettings
 import app.voidfiles.data.CloudRoot
 import app.voidfiles.data.LocalNode
 import app.voidfiles.data.Storage
+import app.voidfiles.data.StorageVolumeInfo
 import app.voidfiles.ui.theme.VoidTheme
 import app.voidfiles.ui.theme.headingStyle
 import java.io.File
@@ -73,7 +76,8 @@ fun Drawer(
 ) {
     val c = VoidTheme.colors
     val context = LocalContext.current
-    val volumes = remember { Storage.volumes(context) }
+    val volumes = vm.volumes
+    var ejectVolume by remember { mutableStateOf<StorageVolumeInfo?>(null) }
     var removeRoot by remember { mutableStateOf<CloudRoot?>(null) }
     var editQuick by remember { mutableStateOf(false) }
 
@@ -96,9 +100,22 @@ fun Drawer(
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (v.isPrimary) Icons.Outlined.PhoneAndroid else Icons.Outlined.SdCard, null, tint = c.text)
+                        Icon(
+                            when {
+                                v.isPrimary -> Icons.Outlined.PhoneAndroid
+                                v.isUsb -> Icons.Outlined.Usb
+                                else -> Icons.Outlined.SdCard
+                            },
+                            null, tint = c.text,
+                        )
                         Spacer(Modifier.width(14.dp))
-                        Text(v.label, color = c.text, style = MaterialTheme.typography.bodyLarge)
+                        Column(Modifier.weight(1f)) {
+                            Text(v.label, color = c.text, style = MaterialTheme.typography.bodyLarge)
+                            if (v.isRemovable) Label(if (v.isUsb) "Extern · USB" else "Extern", color = c.accent)
+                        }
+                        if (v.isRemovable) {
+                            IconButton(onClick = { ejectVolume = v }) { Icon(Icons.Outlined.Eject, "Trennen", tint = c.text) }
+                        }
                     }
                     if (total > 0) {
                         Spacer(Modifier.height(8.dp))
@@ -179,6 +196,21 @@ fun Drawer(
             DrawerItem("Tresor", Icons.Outlined.Lock) { close(); onOpenVault() }
             DrawerItem("Papierkorb", Icons.Outlined.Delete) { vm.loadTrash(); vm.screen = Screen.TRASH; close() }
             DrawerItem("Einstellungen", Icons.Outlined.Settings) { vm.screen = Screen.SETTINGS; close() }
+        }
+    }
+
+    ejectVolume?.let { v ->
+        ConfirmDialog(
+            "Trennen",
+            "\"${v.label}\" sicher trennen? VOID Files gibt den Speicher frei und öffnet die Speicher-Einstellungen. " +
+                "Dort \"Auswerfen\" bzw. \"Trennen\" tippen – erst dann den Speicher abziehen.",
+            "Trennen",
+            onDismiss = { ejectVolume = null },
+        ) {
+            ejectVolume = null
+            vm.prepareEject(v)
+            close()
+            launcher.openStorageSettings()
         }
     }
 

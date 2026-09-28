@@ -113,6 +113,24 @@ class Launcher(private val context: Context) {
         if (!ShortcutManagerCompat.requestPinShortcut(context, info, null)) toast("Verknüpfung konnte nicht erstellt werden")
     }
 
+    /** System storage settings, where SD cards and USB drives can be ejected. */
+    fun openStorageSettings() {
+        val candidates = listOf(
+            Intent(Settings.ACTION_MEMORY_CARD_SETTINGS),
+            Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS),
+            Intent(Settings.ACTION_SETTINGS),
+        )
+        for (intent in candidates) {
+            try {
+                context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                return
+            } catch (e: ActivityNotFoundException) {
+                continue
+            }
+        }
+        toast("Speicher-Einstellungen nicht gefunden")
+    }
+
     fun openProtonApp() {
         val launch = context.packageManager.getLaunchIntentForPackage(PROTON_DRIVE)
         if (launch == null) {

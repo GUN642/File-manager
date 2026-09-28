@@ -79,6 +79,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
+        vm.refreshVolumes()
         val now = checkAccess()
         if (now && !hasAccess) {
             vm.reload(vm.left)

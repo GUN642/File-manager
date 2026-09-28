@@ -1,7 +1,12 @@
 package app.voidfiles.ui
 
 import android.app.Application
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
+import app.voidfiles.data.StorageVolumeInfo
 import android.net.Uri
 import android.os.Environment
 import android.provider.OpenableColumns
@@ -135,8 +140,10 @@ sealed interface UiEvent {
 
 const val RECENT_QUERY = "Letzte Dateien"
 
+private val HTML_EXTENSIONS = setOf("html", "htm", "xhtml", "shtml", "mht", "mhtml")
+
 private val TEXT_EXTENSIONS = setOf(
-    "txt", "md", "log", "json", "xml", "csv", "kt", "kts", "java", "py", "js", "ts", "html", "htm", "css", "sh",
+    "txt", "md", "log", "json", "xml", "csv", "kt", "kts", "java", "py", "js", "ts", "css", "sh",
     "yml", "yaml", "ini", "conf", "cfg", "properties", "gradle", "c", "cpp", "h", "rs", "go", "sql", "toml", "srt", "nfo",
 )
 
@@ -226,6 +233,81 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             if (repo.settings.first().autoUpdateCheck) checkForUpdates(manual = false)
         }
+    }
+
+    // ------------------------------------------------------------------ storage volumes
+
+    var volumes by mutableStateOf(Storage.volumes(app))
+        private set
+
+    private val mediaReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            // The volume list needs a moment to settle after the broadcast.
+            viewModelScope.launch {
+                kotlinx.coroutines.delay(600)
+                refreshVolumes()
+            }
+        }
+    }
+
+    init {
+        // Keep the storage list up to date when SD cards or USB drives come and go.
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_MEDIA_MOUNTED)
+            addAction(Intent.ACTION_MEDIA_UNMOUNTED)
+            addAction(Intent.ACTION_MEDIA_REMOVED)
+            addAction(Intent.ACTION_MEDIA_BAD_REMOVAL)
+            addAction(Intent.ACTION_MEDIA_EJECT)
+            addDataScheme("file")
+        }
+        ContextCompat.registerReceiver(app, mediaReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+    }
+
+    override fun onCleared() {
+        runCatching { getApplication<Application>().unregisterReceiver(mediaReceiver) }
+        super.onCleared()
+    }
+
+    fun refreshVolumes() {
+        val before = volumes
+        val now = Storage.volumes(getApplication())
+        volumes = now
+        val gone = before.filter { b -> now.none { it.root.absolutePath == b.root.absolutePath } }
+        val added = now.filter { n -> before.none { it.root.absolutePath == n.root.absolutePath } }
+        added.forEach { message("${it.label} verbunden") }
+        for (v in gone) {
+            message("${v.label} getrennt")
+            // Panes that were showing the removed drive fall back to the start folder.
+            for (pane in listOf(left, right)) {
+                val cur = pane.current
+                if (cur is LocalNode && cur.file.absolutePath.startsWith(v.root.absolutePath)) {
+                    pane.search = null
+                    pane.selection = emptySet()
+                    pane.stack = startStack()
+                    reload(pane)
+                }
+            }
+        }
+    }
+
+    /**
+     * Android lets only the system unmount a drive. We leave the drive (so nothing is using it) and the UI
+     * then opens the system storage settings where it can be ejected safely.
+     */
+    fun prepareEject(volume: StorageVolumeInfo) {
+        for (pane in listOf(left, right)) {
+            val cur = pane.current
+            if (cur is LocalNode && cur.file.absolutePath.startsWith(volume.root.absolutePath)) {
+                pane.search = null
+                pane.selection = emptySet()
+                pane.stack = startStack()
+                reload(pane)
+            }
+        }
+        if (clipboard?.nodes?.any { it is LocalNode && it.file.absolutePath.startsWith(volume.root.absolutePath) } == true) {
+            clipboard = null
+        }
+        message("In den Speicher-Einstellungen \"${volume.label}\" → \"Auswerfen\" / \"Trennen\" tippen")
     }
 
     /** The app opens in the Download folder (falls back to internal storage). */
@@ -861,6 +943,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             mime.startsWith("image/") && ext != "svg" -> PreviewKind.IMAGE
             ext == "pdf" -> PreviewKind.PDF
             mime.startsWith("video/") || mime.startsWith("audio/") -> PreviewKind.MEDIA
+            // Web pages belong in the browser, not in the code editor.
+            ext in HTML_EXTENSIONS || mime == "text/html" -> null
             mime.startsWith("text/") || ext in TEXT_EXTENSIONS -> PreviewKind.TEXT
             else -> null
         }

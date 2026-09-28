@@ -9,7 +9,13 @@ import android.provider.MediaStore
 import java.io.File
 import java.io.IOException
 
-data class StorageVolumeInfo(val label: String, val root: File, val isPrimary: Boolean) {
+data class StorageVolumeInfo(
+    val label: String,
+    val root: File,
+    val isPrimary: Boolean,
+    val isRemovable: Boolean = !isPrimary,
+    val isUsb: Boolean = false,
+) {
     val total: Long get() = runCatching { StatFs(root.absolutePath).totalBytes }.getOrDefault(0L)
     val free: Long get() = runCatching { StatFs(root.absolutePath).availableBytes }.getOrDefault(0L)
 }
@@ -24,8 +30,16 @@ object Storage {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             for (v in sm.storageVolumes) {
                 val dir = v.directory ?: continue
-                val label = if (v.isPrimary) "Interner Speicher" else (v.getDescription(context) ?: "SD-Karte")
-                result += StorageVolumeInfo(label, dir, v.isPrimary)
+                if (v.state != Environment.MEDIA_MOUNTED && v.state != Environment.MEDIA_MOUNTED_READ_ONLY) continue
+                val description = v.getDescription(context).orEmpty()
+                // USB sticks and card readers are removable volumes whose description names USB.
+                val usb = !v.isPrimary && description.contains("USB", ignoreCase = true)
+                val label = when {
+                    v.isPrimary -> "Interner Speicher"
+                    description.isNotBlank() -> description
+                    else -> "SD-Karte"
+                }
+                result += StorageVolumeInfo(label, dir, v.isPrimary, v.isRemovable, usb)
             }
         } else {
             result += StorageVolumeInfo("Interner Speicher", primaryRoot, true)
