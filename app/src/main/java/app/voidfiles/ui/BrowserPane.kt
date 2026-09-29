@@ -5,6 +5,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import kotlinx.coroutines.isActive
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -378,6 +387,9 @@ private fun PaneContent(vm: MainViewModel, pane: Pane, settings: AppSettings, co
     val swipeRight: (Node) -> Unit = { node -> vm.toggleSelect(pane, node) }
     val items = pane.visible
     val bottomPad = PaddingValues(bottom = 120.dp)
+    // Swiping rows sideways would fight with drag-to-select, so it pauses while a selection is active.
+    val swipe = settings.swipeGestures && pane.selection.isEmpty()
+    val listKey = pane.current.id + ":" + pane.search?.kind
     when {
         pane.error != null && pane.search == null -> EmptyState("Kein Zugriff", pane.error ?: "")
         items.isEmpty() && !pane.loading && pane.search?.running != true ->
@@ -386,45 +398,143 @@ private fun PaneContent(vm: MainViewModel, pane: Pane, settings: AppSettings, co
                 ListKind.SEARCH -> EmptyState("Nichts gefunden", "")
                 null -> EmptyState("Leer", "Dieser Ordner ist leer")
             }
-        settings.viewMode == ViewMode.GRID -> LazyVerticalGrid(
-            columns = GridCells.Adaptive(if (compact) 88.dp else 104.dp),
-            contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = 120.dp),
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            items(items, key = { it.id }) { node ->
-                GridItem(node, node.id in pane.selection, settings.thumbnails,
-                    onClick = { vm.openNode(pane, node) }, onLongClick = { vm.toggleSelect(pane, node) })
+        settings.viewMode == ViewMode.GRID -> {
+            val gridState = remember(listKey) { LazyGridState() }
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(if (compact) 88.dp else 104.dp),
+                state = gridState,
+                contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = 120.dp),
+                modifier = Modifier.fillMaxSize().dragToSelect(
+                    pane = pane,
+                    keyAt = { pos ->
+                        gridState.layoutInfo.visibleItemsInfo.firstOrNull {
+                            pos.x.toInt() in it.offset.x until it.offset.x + it.size.width &&
+                                pos.y.toInt() in it.offset.y until it.offset.y + it.size.height
+                        }?.key
+                    },
+                    scrollBy = { gridState.scrollBy(it) },
+                ),
+            ) {
+                items(items, key = { it.id }) { node ->
+                    GridItem(node, node.id in pane.selection, settings.thumbnails, onClick = { vm.openNode(pane, node) })
+                }
             }
         }
-        pane.search?.kind == ListKind.RECENT -> LazyColumn(Modifier.fillMaxSize(), contentPadding = bottomPad) {
-            items.groupBy { dayLabel(it.lastModified) }.forEach { (day, files) ->
-                item(key = "day:$day") {
-                    Label(day, Modifier.padding(start = if (compact) 12.dp else 20.dp, top = 14.dp, bottom = 4.dp), color = VoidTheme.colors.accent)
-                }
-                items(files, key = { it.id }) { node ->
-                    SwipeRow(settings.swipeGestures, { swipeLeft(node) }, { swipeRight(node) }) {
-                        FileRow(
-                            node, node.id in pane.selection, settings.thumbnails, compact,
-                            subtitle = "${formatSize(node.size)}  ·  ${timeOf(node.lastModified)}  ·  ${parentHint(node)}",
-                            onClick = { vm.openNode(pane, node) },
-                            onLongClick = { vm.toggleSelect(pane, node) },
-                        )
+        else -> {
+            val listState = remember(listKey) { LazyListState() }
+            LazyColumn(
+                Modifier.fillMaxSize().dragToSelect(
+                    pane = pane,
+                    keyAt = { pos ->
+                        listState.layoutInfo.visibleItemsInfo.firstOrNull { pos.y.toInt() in it.offset until it.offset + it.size }?.key
+                    },
+                    scrollBy = { listState.scrollBy(it) },
+                ),
+                state = listState,
+                contentPadding = bottomPad,
+            ) {
+                if (pane.search?.kind == ListKind.RECENT) {
+                    items.groupBy { dayLabel(it.lastModified) }.forEach { (day, files) ->
+                        item(key = "day:$day") {
+                            Label(day, Modifier.padding(start = if (compact) 12.dp else 20.dp, top = 14.dp, bottom = 4.dp), color = VoidTheme.colors.accent)
+                        }
+                        items(files, key = { it.id }) { node ->
+                            SwipeRow(swipe, { swipeLeft(node) }, { swipeRight(node) }) {
+                                FileRow(
+                                    node, node.id in pane.selection, settings.thumbnails, compact,
+                                    subtitle = "${formatSize(node.size)}  ·  ${timeOf(node.lastModified)}  ·  ${parentHint(node)}",
+                                    onClick = { vm.openNode(pane, node) },
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    items(items, key = { it.id }) { node ->
+                        SwipeRow(swipe, { swipeLeft(node) }, { swipeRight(node) }) {
+                            FileRow(
+                                node, node.id in pane.selection, settings.thumbnails, compact,
+                                subtitle = if (pane.search != null) parentHint(node) else null,
+                                onClick = { vm.openNode(pane, node) },
+                            )
+                        }
                     }
                 }
             }
         }
-        else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = bottomPad) {
-            items(items, key = { it.id }) { node ->
-                SwipeRow(settings.swipeGestures, { swipeLeft(node) }, { swipeRight(node) }) {
-                    FileRow(
-                        node, node.id in pane.selection, settings.thumbnails, compact,
-                        subtitle = if (pane.search != null) parentHint(node) else null,
-                        onClick = { vm.openNode(pane, node) },
-                        onLongClick = { vm.toggleSelect(pane, node) },
-                    )
-                }
-            }
+    }
+}
+
+/**
+ * Long-press a file, then drag up or down: everything between the first and the current file gets
+ * selected (like in a gallery). Near the top or bottom edge the list scrolls on its own.
+ */
+@Composable
+private fun Modifier.dragToSelect(
+    pane: Pane,
+    keyAt: (Offset) -> Any?,
+    scrollBy: suspend (Float) -> Unit,
+): Modifier {
+    val haptic = LocalHapticFeedback.current
+    val currentPane by rememberUpdatedState(pane)
+    val currentKeyAt by rememberUpdatedState(keyAt)
+    var anchor by remember { mutableStateOf<Int?>(null) }
+    var base by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var lastPos by remember { mutableStateOf(Offset.Zero) }
+    var autoScroll by remember { mutableFloatStateOf(0f) }
+
+    fun update(pos: Offset) {
+        val a = anchor ?: return
+        val ids = currentPane.visible.map { it.id }
+        val key = currentKeyAt(pos) as? String ?: return
+        val idx = ids.indexOf(key)
+        if (idx < 0 || a >= ids.size) return
+        val range = if (idx >= a) ids.subList(a, idx + 1) else ids.subList(idx, a + 1)
+        currentPane.selection = base + range
+    }
+
+    LaunchedEffect(autoScroll) {
+        if (autoScroll == 0f) return@LaunchedEffect
+        while (isActive) {
+            scrollBy(autoScroll)
+            update(lastPos)
+            delay(16)
         }
+    }
+
+    return this.pointerInput(pane) {
+        val edge = 72.dp.toPx()
+        val speed = 14.dp.toPx()
+        detectDragGesturesAfterLongPress(
+            onDragStart = start@{ pos ->
+                val key = currentKeyAt(pos) as? String ?: return@start
+                val idx = currentPane.visible.indexOfFirst { it.id == key }
+                if (idx < 0) return@start
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                anchor = idx
+                base = currentPane.selection
+                lastPos = pos
+                currentPane.selection = base + key
+            },
+            onDrag = { change, _ ->
+                if (anchor == null) return@detectDragGesturesAfterLongPress
+                change.consume()
+                lastPos = change.position
+                update(change.position)
+                autoScroll = when {
+                    change.position.y > size.height - edge -> speed
+                    change.position.y < edge -> -speed
+                    else -> 0f
+                }
+            },
+            onDragEnd = {
+                anchor = null
+                autoScroll = 0f
+            },
+            onDragCancel = {
+                anchor = null
+                autoScroll = 0f
+            },
+        )
     }
 }
 
@@ -521,7 +631,7 @@ private fun FileRow(
     compact: Boolean,
     subtitle: String?,
     onClick: () -> Unit,
-    onLongClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
 ) {
     val c = VoidTheme.colors
     Row(
@@ -564,7 +674,7 @@ private fun GridItem(
     selected: Boolean,
     thumbnails: Boolean,
     onClick: () -> Unit,
-    onLongClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
 ) {
     val c = VoidTheme.colors
     Column(
