@@ -202,15 +202,15 @@ fun Drawer(
     ejectVolume?.let { v ->
         ConfirmDialog(
             "Trennen",
-            "\"${v.label}\" sicher trennen? VOID Files gibt den Speicher frei und öffnet die Speicher-Einstellungen. " +
-                "Dort \"Auswerfen\" bzw. \"Trennen\" tippen – erst dann den Speicher abziehen.",
+            "\"${v.label}\" trennen? VOID Files schreibt alle Daten fertig auf den Speicher und öffnet ihn in " +
+                "Samsungs \"Eigene Dateien\". Dort oben rechts ⋮ → \"Trennen\" tippen – danach kann er abgezogen werden.\n\n" +
+                "(Android erlaubt das eigentliche Trennen nur System-Apps.)",
             "Trennen",
             onDismiss = { ejectVolume = null },
         ) {
             ejectVolume = null
-            vm.prepareEject(v)
             close()
-            launcher.openStorageSettings()
+            vm.prepareEject(v) { launcher.openSystemEject(v.root) }
         }
     }
 

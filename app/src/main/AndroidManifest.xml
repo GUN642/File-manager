@@ -25,6 +25,7 @@
             <data android:mimeType="*/*" />
         </intent>
         <package android:name="me.proton.android.drive" />
+        <package android:name="com.sec.android.app.myfiles" />
     </queries>
 
     <application

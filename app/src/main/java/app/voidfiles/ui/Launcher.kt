@@ -113,6 +113,39 @@ class Launcher(private val context: Context) {
         if (!ShortcutManagerCompat.requestPinShortcut(context, info, null)) toast("Verknüpfung konnte nicht erstellt werden")
     }
 
+    /**
+     * Opens the drive in Samsung's "Eigene Dateien" (a system app that may unmount it via ⋮ → "Trennen").
+     * Falls back to the plain My Files app and finally the storage settings.
+     */
+    fun openSystemEject(root: File) {
+        val pm = context.packageManager
+        val myFiles = listOf(SAMSUNG_MY_FILES).firstOrNull {
+            runCatching { pm.getPackageInfo(it, 0) }.isSuccess
+        }
+        if (myFiles != null) {
+            val atPath = Intent("samsung.myfiles.intent.action.LAUNCH_MY_FILES")
+                .setPackage(myFiles)
+                .putExtra("samsung.myfiles.intent.extra.START_PATH", root.absolutePath)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try {
+                context.startActivity(atPath)
+                return
+            } catch (e: Exception) {
+                // Older/newer My Files versions may not know this action – just open the app.
+            }
+            pm.getLaunchIntentForPackage(myFiles)?.let {
+                try {
+                    context.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    toast("In \"Eigene Dateien\" den USB-Speicher öffnen, dann ⋮ → \"Trennen\"")
+                    return
+                } catch (e: Exception) {
+                    // fall through to the settings
+                }
+            }
+        }
+        openStorageSettings()
+    }
+
     /** System storage settings, where SD cards and USB drives can be ejected. */
     fun openStorageSettings() {
         val candidates = listOf(
@@ -154,5 +187,6 @@ class Launcher(private val context: Context) {
 
     companion object {
         const val PROTON_DRIVE = "me.proton.android.drive"
+        const val SAMSUNG_MY_FILES = "com.sec.android.app.myfiles"
     }
 }

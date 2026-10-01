@@ -291,10 +291,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Android lets only the system unmount a drive. We leave the drive (so nothing is using it) and the UI
-     * then opens the system storage settings where it can be ejected safely.
+     * Android lets only system apps unmount a drive. We leave the drive, flush all pending writes to it and
+     * then hand over to [then] (which opens Samsung's file manager, where "Trennen" is one tap away).
      */
-    fun prepareEject(volume: StorageVolumeInfo) {
+    fun prepareEject(volume: StorageVolumeInfo, then: () -> Unit) {
+        if (opJob?.isActive == true) {
+            message("Es läuft noch ein Vorgang – bitte warten, bis er fertig ist")
+            return
+        }
         for (pane in listOf(left, right)) {
             val cur = pane.current
             if (cur is LocalNode && cur.file.absolutePath.startsWith(volume.root.absolutePath)) {
@@ -307,7 +311,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (clipboard?.nodes?.any { it is LocalNode && it.file.absolutePath.startsWith(volume.root.absolutePath) } == true) {
             clipboard = null
         }
-        message("In den Speicher-Einstellungen \"${volume.label}\" → \"Auswerfen\" / \"Trennen\" tippen")
+        viewModelScope.launch {
+            // Force the kernel to write cached data to the drive (like "Hardware sicher entfernen").
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val p = Runtime.getRuntime().exec(arrayOf("sync"))
+                    p.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)
+                    p.destroy()
+                }
+            }
+            message("Alle Daten geschrieben – jetzt ⋮ → \"Trennen\" tippen")
+            then()
+        }
     }
 
     /** The app opens in the Download folder (falls back to internal storage). */
