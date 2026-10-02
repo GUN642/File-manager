@@ -630,7 +630,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             }
-            "${if (move) "Verschoben" else "Kopiert"}: ${done.size}"
+            val fails = index.failures
+            buildString {
+                append("${if (move) "Verschoben" else "Kopiert"}: ${done.size}")
+                if (fails.isNotEmpty()) {
+                    append(" · ${fails.size} Fehler: ")
+                    append(fails.take(3).joinToString("; ") { (name, msg) -> "$name – ${msg.substringAfterLast(": ")}" })
+                    if (fails.size > 3) append(" …")
+                }
+            }
         }
     }
 

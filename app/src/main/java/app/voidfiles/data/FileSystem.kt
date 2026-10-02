@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
+import android.provider.MediaStore
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -30,6 +31,78 @@ enum class ConflictPolicy { OVERWRITE, KEEP_BOTH, SKIP }
 /** All file operations, transparently working on local files and SAF documents. */
 class FileSystem(context: Context) {
     private val resolver: ContentResolver = context.contentResolver
+
+    // ---------------------------------------------------------------- local writes with EPERM recovery
+
+    private fun isPermissionError(e: Throwable): Boolean {
+        val m = e.message ?: return false
+        return "EPERM" in m || "EACCES" in m
+    }
+
+    /**
+     * Android's storage layer refuses to create a file when its media index still holds a stale entry for the
+     * same path (e.g. left behind by another app). Removing that entry makes the path usable again.
+     */
+    private fun clearStaleMediaEntry(f: File) {
+        runCatching {
+            resolver.delete(
+                MediaStore.Files.getContentUri("external"),
+                "lower(${MediaStore.MediaColumns.DATA}) = lower(?)",
+                arrayOf(f.absolutePath),
+            )
+        }
+    }
+
+    private fun createLocalFile(f: File) {
+        if (f.exists()) return
+        try {
+            if (f.createNewFile()) return
+        } catch (e: IOException) {
+            if (!isPermissionError(e)) throw e
+        }
+        clearStaleMediaEntry(f)
+        try {
+            if (f.createNewFile()) return
+        } catch (e: IOException) {
+            if (!isPermissionError(e)) throw e
+        }
+        // Last resort: create under a neutral name and rename into place.
+        val tmp = File(f.parentFile, ".voidtmp_${System.nanoTime()}")
+        if (tmp.createNewFile() && tmp.renameTo(f)) return
+        tmp.delete()
+        throw IOException("Android verweigert das Anlegen von \"${f.name}\" (EPERM)")
+    }
+
+    private fun openLocalOutput(f: File): OutputStream {
+        try {
+            return FileOutputStream(f)
+        } catch (e: IOException) {
+            if (!isPermissionError(e)) throw e
+        }
+        clearStaleMediaEntry(f)
+        try {
+            return FileOutputStream(f)
+        } catch (e: IOException) {
+            if (!isPermissionError(e)) throw e
+        }
+        // Write under a neutral name, then rename into place when the stream is closed.
+        val tmp = File(f.parentFile, ".voidtmp_${System.nanoTime()}")
+        val out = FileOutputStream(tmp)
+        return object : java.io.FilterOutputStream(out) {
+            private var closed = false
+            override fun write(b: ByteArray, off: Int, len: Int) = out.write(b, off, len)
+            override fun close() {
+                if (closed) return
+                closed = true
+                super.close()
+                if (f.exists()) f.delete()
+                if (!tmp.renameTo(f)) {
+                    tmp.delete()
+                    throw IOException("Android verweigert das Schreiben von \"${f.name}\" (EPERM)")
+                }
+            }
+        }
+    }
 
     // ---------------------------------------------------------------- listing
 
@@ -104,7 +177,7 @@ class FileSystem(context: Context) {
     }
 
     fun openOutput(node: Node): OutputStream = when (node) {
-        is LocalNode -> FileOutputStream(node.file)
+        is LocalNode -> openLocalOutput(node.file)
         is SafNode -> resolver.openOutputStream(node.uri, "wt") ?: throw IOException("Kann ${node.name} nicht schreiben")
     }
 
@@ -137,7 +210,7 @@ class FileSystem(context: Context) {
     fun createFile(parent: Node, name: String, mime: String = Node.mimeFromName(name)): Node = when (parent) {
         is LocalNode -> {
             val f = File(parent.file, name)
-            if (!f.exists() && !f.createNewFile()) throw IOException("Datei \"$name\" konnte nicht erstellt werden")
+            createLocalFile(f)
             LocalNode.of(f)
         }
         is SafNode -> {
@@ -245,7 +318,8 @@ class FileSystem(context: Context) {
         return copyInto(src, destDir, targetName, sink, index)
     }
 
-    private fun copyInto(src: Node, destDir: Node, name: String, sink: ProgressSink, index: DirIndex): Node {
+    /** Copies one file or folder. A failing file is recorded in [DirIndex.failures] and skipped (returns null). */
+    private fun copyInto(src: Node, destDir: Node, name: String, sink: ProgressSink, index: DirIndex): Node? {
         sink.checkCancelled()
         if (src.isDirectory) {
             val existingDir = index.of(destDir)[name]?.takeIf { it.isDirectory }
@@ -264,21 +338,34 @@ class FileSystem(context: Context) {
             return newDir
         }
         sink.onFile(src.name)
-        if (src is LocalNode && destDir is LocalNode) {
-            val target = File(destDir.file, name)
-            copyStream(FileInputStream(src.file), FileOutputStream(target), sink)
-            target.setLastModified(src.lastModified)
-            return LocalNode.of(target).also { index.put(destDir, it) }
-        }
-        val target = createFile(destDir, name, src.mimeType)
         try {
-            copyStream(openInput(src), openOutput(target), sink)
-        } catch (e: Throwable) {
-            runCatching { delete(target) }
-            throw e
+            if (src is LocalNode && destDir is LocalNode) {
+                val target = File(destDir.file, name)
+                try {
+                    copyStream(FileInputStream(src.file), openLocalOutput(target), sink)
+                } catch (e: Throwable) {
+                    target.delete()
+                    throw e
+                }
+                target.setLastModified(src.lastModified)
+                return LocalNode.of(target).also { index.put(destDir, it) }
+            }
+            val target = createFile(destDir, name, src.mimeType)
+            try {
+                copyStream(openInput(src), openOutput(target), sink)
+            } catch (e: Throwable) {
+                runCatching { delete(target) }
+                throw e
+            }
+            index.put(destDir, target)
+            return target
+        } catch (e: IOException) {
+            index.failures += src.name to (e.message ?: "Fehler")
+            return null
+        } catch (e: SecurityException) {
+            index.failures += src.name to (e.message ?: "Kein Zugriff")
+            return null
         }
-        index.put(destDir, target)
-        return target
     }
 
     /** Copies without closing either stream. */
@@ -328,12 +415,15 @@ class FileSystem(context: Context) {
                 if (!src.isDirectory) sink.onBytes(src.size)
                 return LocalNode.of(target)
             }
-            val copied = copyInto(src, destDir, target.name, sink, index)
-            delete(src)
+            val before = index.failures.size
+            val copied = copyInto(src, destDir, target.name, sink, index) ?: return null
+            // Keep the source if anything inside failed – nothing may get lost.
+            if (index.failures.size == before) delete(src)
             return copied
         }
+        val before = index.failures.size
         val copied = copy(src, destDir, policy, sink, index) ?: return null
-        delete(src)
+        if (index.failures.size == before) delete(src)
         return copied
     }
 }
@@ -344,6 +434,9 @@ class FileSystem(context: Context) {
  */
 class DirIndex(private val fs: FileSystem) {
     private val map = HashMap<String, HashMap<String, Node>>()
+
+    /** Files that could not be copied: name to error message. */
+    val failures = ArrayList<Pair<String, String>>()
 
     fun of(dir: Node): HashMap<String, Node> = map.getOrPut(dir.id) { fs.list(dir).associateByTo(HashMap()) { it.name } }
 
