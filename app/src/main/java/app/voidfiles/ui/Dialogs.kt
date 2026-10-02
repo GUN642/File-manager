@@ -53,6 +53,8 @@ sealed interface Dlg {
     data class Sort(val pane: Pane) : Dlg
     data class BatchRename(val pane: Pane, val nodes: List<Node>) : Dlg
     data class MoveToVault(val pane: Pane, val nodes: List<Node>) : Dlg
+    data class ImageConvert(val pane: Pane, val nodes: List<Node>) : Dlg
+    data class StripLocation(val pane: Pane, val nodes: List<Node>) : Dlg
 }
 
 @Composable
@@ -398,6 +400,61 @@ fun UpdateDialog(release: app.voidfiles.data.Release, onDismiss: () -> Unit, onU
                 Spacer(Modifier.height(10.dp))
                 Label("Download: ${formatSize(release.apkSize)}")
             }
+        }
+    }
+}
+
+@Composable
+fun CrashDialog(report: String, onShare: () -> Unit, onCopy: () -> Unit, onDismiss: () -> Unit) {
+    val c = VoidTheme.colors
+    VoidDialog("Absturz", onDismiss, "Bericht teilen", onShare, dismissText = "Schließen") {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "VOID Files ist beim letzten Mal abgestürzt. Teile den Bericht (z. B. per Mail oder kopiert in den Chat), " +
+                    "damit der Fehler behoben werden kann. Er enthält nur Gerät, Android-Version und die Fehlerstelle – keine Dateien.",
+                color = c.text,
+            )
+            Pill("Kopieren", selected = false, onClick = onCopy)
+            Text(
+                report.lines().take(14).joinToString("\n"),
+                color = c.textMuted,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun ImageConvertDialog(count: Int, onDismiss: () -> Unit, onConfirm: (app.voidfiles.data.ImageJob) -> Unit) {
+    val c = VoidTheme.colors
+    var job by remember { mutableStateOf(app.voidfiles.data.ImageJob()) }
+    VoidDialog(if (count == 1) "Bild bearbeiten" else "$count Bilder bearbeiten", onDismiss, "Speichern", { onConfirm(job) }) {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Label("Format")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                app.voidfiles.data.ImageFormat.entries.forEach { f -> Pill(f.label, job.format == f, { job = job.copy(format = f) }) }
+            }
+            Label("Größe (längste Seite)")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(0 to "Original", 3840 to "3840", 2560 to "2560", 1920 to "1920", 1280 to "1280").forEach { (px, label) ->
+                    Pill(label, job.maxSize == px, { job = job.copy(maxSize = px) })
+                }
+            }
+            if (job.format != app.voidfiles.data.ImageFormat.PNG) {
+                Label("Qualität")
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(100, 90, 80, 70).forEach { q -> Pill("$q %", job.quality == q, { job = job.copy(quality = q) }) }
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = job.keepDate, onCheckedChange = { job = job.copy(keepDate = it) })
+                Text("Aufnahmedatum behalten", color = c.text)
+            }
+            Text(
+                "Das Original bleibt erhalten, die neue Datei landet daneben. Standort und andere Metadaten werden dabei entfernt.",
+                color = c.textMuted, style = MaterialTheme.typography.bodyMedium,
+            )
         }
     }
 }

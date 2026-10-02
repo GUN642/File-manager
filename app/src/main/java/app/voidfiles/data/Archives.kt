@@ -225,6 +225,7 @@ object Archives {
     /** Writes archive entries below a destination, creating folders on demand and blocking path traversal. */
     internal class EntryWriter(private val fs: FileSystem, private val root: Node, private val sink: ProgressSink) {
         private val dirs = HashMap<String, Node>()
+        private val index = DirIndex(fs)
 
         private fun segments(path: String): List<String> {
             val parts = path.replace('\\', '/').split('/').filter { it.isNotEmpty() && it != "." }
@@ -240,9 +241,13 @@ object Archives {
             for (part in parts) {
                 key.append('/').append(part)
                 val k = key.toString()
+                val parent = current
                 current = dirs[k] ?: run {
-                    val found = fs.findChild(current, part)
-                    val dir = if (found != null && found.isDirectory) found else fs.createDirectory(current, part)
+                    val found = index.of(parent)[part]
+                    val dir = if (found != null && found.isDirectory) found else fs.createDirectory(parent, part).also {
+                        index.put(parent, it)
+                        index.markEmpty(it)
+                    }
                     dirs[k] = dir
                     dir
                 }
@@ -270,8 +275,14 @@ object Archives {
             val dir = dirFor(parts.dropLast(1))
             val name = parts.last()
             sink.onFile(name)
-            fs.findChild(dir, name)?.let { if (!it.isDirectory) fs.delete(it) }
+            index.of(dir)[name]?.let {
+                if (!it.isDirectory) {
+                    fs.delete(it)
+                    index.remove(dir, name)
+                }
+            }
             val file = fs.createFile(dir, name)
+            index.put(dir, file)
             fs.openOutput(file).use(block)
         }
     }

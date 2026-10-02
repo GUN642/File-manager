@@ -25,11 +25,14 @@ import app.voidfiles.data.ArchiveBrowser
 import app.voidfiles.data.ArchiveItem
 import app.voidfiles.data.ArchiveListing
 import app.voidfiles.data.FileInfo
+import app.voidfiles.data.ImageJob
+import app.voidfiles.data.ImageTools
 import app.voidfiles.data.Vault
 import app.voidfiles.data.VaultEntry
 import app.voidfiles.data.Archives
 import app.voidfiles.data.CloudRoot
 import app.voidfiles.data.ConflictPolicy
+import app.voidfiles.data.DirIndex
 import app.voidfiles.data.FileSystem
 import app.voidfiles.data.LocalNode
 import app.voidfiles.data.Node
@@ -96,6 +99,10 @@ data class OpState(
     val file: String = "",
     val done: Long = 0,
     val total: Long = 0,
+    /** Bytes per second, 0 while unknown. */
+    val speed: Long = 0,
+    /** Seconds remaining, -1 while unknown. */
+    val etaSeconds: Long = -1,
 )
 
 data class Clipboard(val nodes: List<Node>, val cut: Boolean)
@@ -136,6 +143,7 @@ sealed interface UiEvent {
     data class Message(val text: String, val undo: UndoAction? = null) : UiEvent
     data class Open(val node: Node) : UiEvent
     data class Install(val apk: File) : UiEvent
+    data class Share(val nodes: List<Node>) : UiEvent
 }
 
 const val RECENT_QUERY = "Letzte Dateien"
@@ -598,10 +606,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val verb = if (move) "Verschiebe" else "Kopiere"
         runOp("$verb ${nodes.size} ${if (nodes.size == 1) "Element" else "Elemente"}", measure = nodes) { sink ->
             val done = ArrayList<Pair<Node, Node?>>()
+            val index = DirIndex(fs)
             try {
                 for (n in nodes) {
                     val origin = parentOf(n)
-                    val result = if (move) fs.move(n, dest, policy, sink) else fs.copy(n, dest, policy, sink)
+                    val result = if (move) fs.move(n, dest, policy, sink, index) else fs.copy(n, dest, policy, sink, index)
                     if (result != null) done += result to origin
                 }
             } finally {
@@ -673,6 +682,63 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!current.useTrash || node !is LocalNode) return false
         delete(pane, listOf(node), permanent = false)
         return true
+    }
+
+    // ------------------------------------------------------------------ image tools
+
+    private val imageWork: File get() = File(getApplication<Application>().cacheDir, "image_work")
+
+    fun convertImages(pane: Pane, nodes: List<Node>, job: ImageJob) {
+        val images = nodes.filter { ImageTools.isImage(it) }
+        pane.selection = emptySet()
+        runOp("Bearbeite ${images.size} ${if (images.size == 1) "Bild" else "Bilder"}", measure = null) { sink ->
+            var count = 0
+            for (img in images) {
+                sink.checkCancelled()
+                sink.onFile(img.name)
+                ImageTools.convert(getApplication(), fs, img, parentOf(img) ?: pane.current, job, imageWork)
+                count++
+            }
+            "$count ${if (count == 1) "Bild" else "Bilder"} gespeichert (${job.format.label})"
+        }
+    }
+
+    fun stripLocation(pane: Pane, nodes: List<Node>) {
+        val images = nodes.filter { ImageTools.isImage(it) }
+        pane.selection = emptySet()
+        runOp("Entferne Standortdaten", measure = null) { sink ->
+            var done = 0
+            var skipped = 0
+            for (img in images) {
+                sink.checkCancelled()
+                sink.onFile(img.name)
+                if (ImageTools.stripLocationInPlace(fs, img, imageWork)) done++ else skipped++
+            }
+            buildString {
+                append("Standort entfernt: $done")
+                if (skipped > 0) append(" · $skipped übersprungen (z. B. HEIC – \"Ohne Standort teilen\" oder Umwandeln nutzen)")
+            }
+        }
+    }
+
+    /** Shares copies of the pictures without location data; the originals stay untouched. */
+    fun shareWithoutLocation(pane: Pane, nodes: List<Node>) {
+        val images = nodes.filter { ImageTools.isImage(it) }
+        if (images.isEmpty()) {
+            message("Keine Bilder ausgewählt"); return
+        }
+        pane.selection = emptySet()
+        val outDir = File(getApplication<Application>().cacheDir, "share_clean")
+        runOp("Bereite Bilder vor", measure = null) { sink ->
+            outDir.deleteRecursively()
+            val files = images.map { img ->
+                sink.checkCancelled()
+                sink.onFile(img.name)
+                LocalNode.of(ImageTools.withoutLocation(getApplication(), fs, img, outDir))
+            }
+            events.trySend(UiEvent.Share(files))
+            null
+        }
     }
 
     // ------------------------------------------------------------------ batch rename
@@ -1304,6 +1370,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 var total = 0L
                 var file = ""
                 var last = 0L
+                // Transfer speed: smoothed over samples taken at least every half second.
+                var sampleTime = 0L
+                var sampleDone = 0L
+                var speed = 0.0
                 override fun onFile(name: String) {
                     file = name; push(false)
                 }
@@ -1315,9 +1385,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 fun push(force: Boolean) {
                     val now = System.currentTimeMillis()
+                    if (sampleTime == 0L && done > 0) {
+                        sampleTime = now; sampleDone = done
+                    } else if (sampleTime != 0L && now - sampleTime >= 500) {
+                        val inst = (done - sampleDone) * 1000.0 / (now - sampleTime)
+                        speed = if (speed == 0.0) inst else speed * 0.7 + inst * 0.3
+                        sampleTime = now; sampleDone = done
+                    }
                     if (force || now - last > 120) {
                         last = now
-                        op = OpState(title, file, done, total)
+                        val eta = if (speed > 0 && total > done) ((total - done) / speed).toLong() else -1L
+                        op = OpState(title, file, done, total, speed.toLong(), eta)
                     }
                 }
             }

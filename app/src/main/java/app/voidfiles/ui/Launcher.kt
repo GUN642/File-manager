@@ -80,6 +80,20 @@ class Launcher(private val context: Context) {
         }
     }
 
+    fun shareText(subject: String, text: String) {
+        val intent = Intent(Intent.ACTION_SEND)
+            .setType("text/plain")
+            .putExtra(Intent.EXTRA_SUBJECT, subject)
+            .putExtra(Intent.EXTRA_TEXT, text)
+        start(Intent.createChooser(intent, "Teilen"))
+    }
+
+    fun copyText(label: String, text: String) {
+        val cm = context.getSystemService(android.content.ClipboardManager::class.java)
+        cm?.setPrimaryClip(ClipData.newPlainText(label, text))
+        toast("Kopiert")
+    }
+
     /** Hands a downloaded update APK to the system installer. */
     fun installApk(apk: File) {
         if (!context.packageManager.canRequestPackageInstalls()) {

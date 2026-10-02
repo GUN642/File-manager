@@ -197,8 +197,9 @@ class FileSystem(context: Context) {
         return bytes to count
     }
 
-    fun uniqueName(dir: Node, name: String): String {
-        val existing = list(dir).mapTo(HashSet()) { it.name }
+    fun uniqueName(dir: Node, name: String): String = uniqueName(list(dir).mapTo(HashSet()) { it.name }, name)
+
+    fun uniqueName(existing: Set<String>, name: String): String {
         if (name !in existing) return name
         val dot = name.lastIndexOf('.')
         val (base, ext) = if (dot > 0) name.substring(0, dot) to name.substring(dot) else name to ""
@@ -224,30 +225,41 @@ class FileSystem(context: Context) {
     }
 
     /** Copies [src] into [destDir]. Returns the created node or null if skipped. */
-    fun copy(src: Node, destDir: Node, policy: ConflictPolicy, sink: ProgressSink): Node? {
+    fun copy(src: Node, destDir: Node, policy: ConflictPolicy, sink: ProgressSink, index: DirIndex = DirIndex(this)): Node? {
         sink.checkCancelled()
         if (src.isDirectory && isInside(destDir, src)) throw IOException("Ordner kann nicht in sich selbst kopiert werden")
-        val existing = findChild(destDir, src.name)
+        val children = index.of(destDir)
+        val existing = children[src.name]
         val targetName = when {
             existing == null -> src.name
             policy == ConflictPolicy.SKIP -> return null
-            policy == ConflictPolicy.KEEP_BOTH || existing.id == src.id -> uniqueName(destDir, src.name)
+            policy == ConflictPolicy.KEEP_BOTH || existing.id == src.id -> uniqueName(children.keys, src.name)
             else -> {
-                if (existing.isDirectory != src.isDirectory || !src.isDirectory) delete(existing)
+                if (existing.isDirectory != src.isDirectory || !src.isDirectory) {
+                    delete(existing)
+                    children.remove(existing.name)
+                }
                 src.name
             }
         }
-        return copyInto(src, destDir, targetName, sink)
+        return copyInto(src, destDir, targetName, sink, index)
     }
 
-    private fun copyInto(src: Node, destDir: Node, name: String, sink: ProgressSink): Node {
+    private fun copyInto(src: Node, destDir: Node, name: String, sink: ProgressSink, index: DirIndex): Node {
         sink.checkCancelled()
         if (src.isDirectory) {
-            val newDir = findChild(destDir, name)?.takeIf { it.isDirectory } ?: createDirectory(destDir, name)
+            val existingDir = index.of(destDir)[name]?.takeIf { it.isDirectory }
+            val newDir = existingDir ?: createDirectory(destDir, name).also {
+                index.put(destDir, it)
+                index.markEmpty(it) // freshly created: no need to list it
+            }
             for (child in list(src)) {
-                val existingChild = findChild(newDir, child.name)
-                if (existingChild != null && !existingChild.isDirectory) delete(existingChild)
-                copyInto(child, newDir, child.name, sink)
+                val existingChild = index.of(newDir)[child.name]
+                if (existingChild != null && !existingChild.isDirectory) {
+                    delete(existingChild)
+                    index.remove(newDir, existingChild.name)
+                }
+                copyInto(child, newDir, child.name, sink, index)
             }
             return newDir
         }
@@ -256,7 +268,7 @@ class FileSystem(context: Context) {
             val target = File(destDir.file, name)
             copyStream(FileInputStream(src.file), FileOutputStream(target), sink)
             target.setLastModified(src.lastModified)
-            return LocalNode.of(target)
+            return LocalNode.of(target).also { index.put(destDir, it) }
         }
         val target = createFile(destDir, name, src.mimeType)
         try {
@@ -265,6 +277,7 @@ class FileSystem(context: Context) {
             runCatching { delete(target) }
             throw e
         }
+        index.put(destDir, target)
         return target
     }
 
@@ -296,7 +309,7 @@ class FileSystem(context: Context) {
     }
 
     /** Moves [src] into [destDir]; uses a cheap rename when both are on the same local volume. */
-    fun move(src: Node, destDir: Node, policy: ConflictPolicy, sink: ProgressSink): Node? {
+    fun move(src: Node, destDir: Node, policy: ConflictPolicy, sink: ProgressSink, index: DirIndex = DirIndex(this)): Node? {
         sink.checkCancelled()
         if (src.isDirectory && isInside(destDir, src)) throw IOException("Ordner kann nicht in sich selbst verschoben werden")
         if (src is LocalNode && destDir is LocalNode) {
@@ -315,12 +328,34 @@ class FileSystem(context: Context) {
                 if (!src.isDirectory) sink.onBytes(src.size)
                 return LocalNode.of(target)
             }
-            val copied = copyInto(src, destDir, target.name, sink)
+            val copied = copyInto(src, destDir, target.name, sink, index)
             delete(src)
             return copied
         }
-        val copied = copy(src, destDir, policy, sink) ?: return null
+        val copied = copy(src, destDir, policy, sink, index) ?: return null
         delete(src)
         return copied
+    }
+}
+
+/**
+ * Children of destination folders, cached for one copy/move operation. Listing a cloud (SAF) folder is slow,
+ * so each folder is listed at most once instead of once per copied file.
+ */
+class DirIndex(private val fs: FileSystem) {
+    private val map = HashMap<String, HashMap<String, Node>>()
+
+    fun of(dir: Node): HashMap<String, Node> = map.getOrPut(dir.id) { fs.list(dir).associateByTo(HashMap()) { it.name } }
+
+    fun markEmpty(dir: Node) {
+        map[dir.id] = HashMap()
+    }
+
+    fun put(dir: Node, node: Node) {
+        map[dir.id]?.put(node.name, node)
+    }
+
+    fun remove(dir: Node, name: String) {
+        map[dir.id]?.remove(name)
     }
 }

@@ -71,7 +71,14 @@ fun formatSize(bytes: Long): String {
     return if (v >= 100) "%.0f %s".format(v, units[i]) else "%.1f %s".format(v, units[i])
 }
 
-private val dateFormat = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+/** "45 Sek.", "3 Min.", "1 Std. 20 Min." */
+fun formatDuration(seconds: Long): String = when {
+    seconds < 60 -> "${maxOf(1, seconds)} Sek."
+    seconds < 3600 -> "${(seconds + 30) / 60} Min."
+    else -> "${seconds / 3600} Std. ${seconds % 3600 / 60} Min."
+}
+
+private val dateFormat =DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
 fun formatDate(ms: Long): String = if (ms <= 0) "—" else dateFormat.format(Date(ms))
 
 enum class Kind { FOLDER, IMAGE, VIDEO, AUDIO, ARCHIVE, APK, PDF, DOC, SHEET, SLIDES, CODE, TEXT, OTHER }

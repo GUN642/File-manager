@@ -87,6 +87,7 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
     val snackbar = remember { SnackbarHostState() }
     var dlg by remember { mutableStateOf<Dlg?>(null) }
     var protonHint by remember { mutableStateOf(false) }
+    var crashReport by remember { mutableStateOf(app.voidfiles.CrashReporter.pending(context)) }
     val c = VoidTheme.colors
 
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -113,6 +114,7 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
                 }
                 is UiEvent.Open -> if (Archives.isArchive(e.node.name)) dlg = Dlg.ArchiveAction(e.node) else launcher.open(e.node)
                 is UiEvent.Install -> launcher.installApk(e.apk)
+                is UiEvent.Share -> launcher.share(e.nodes)
             }
         }
     }
@@ -210,6 +212,18 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
             onOpenWith = { dlg = null; launcher.open(d.node, chooser = true) },
             onBrowse = { dlg = null; vm.openArchive(d.node) },
         )
+        is Dlg.ImageConvert -> ImageConvertDialog(d.nodes.size, { dlg = null }) { job ->
+            dlg = null; vm.convertImages(d.pane, d.nodes, job)
+        }
+        is Dlg.StripLocation -> ConfirmDialog(
+            "Standort entfernen",
+            "GPS-Daten aus ${d.nodes.size} ${if (d.nodes.size == 1) "Bild" else "Bildern"} entfernen? Das ändert die Originale " +
+                "(Bildqualität bleibt gleich). HEIC-Fotos werden dabei übersprungen.",
+            "Entfernen",
+            { dlg = null },
+        ) {
+            dlg = null; vm.stripLocation(d.pane, d.nodes)
+        }
         is Dlg.BatchRename -> BatchRenameDialog(d.nodes, { rule -> vm.batchNames(d.nodes, rule) }, { dlg = null }) { rule ->
             dlg = null; vm.batchRename(d.pane, d.nodes, rule)
         }
@@ -243,6 +257,17 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
         }
     }
     vm.properties?.let { p -> PropertiesDialog(p, { vm.properties = null }) { vm.computeChecksums(p.node) } }
+    crashReport?.let { report ->
+        CrashDialog(
+            report = report,
+            onShare = { launcher.shareText("VOID Files Fehlerbericht", report) },
+            onCopy = { launcher.copyText("VOID Files Fehlerbericht", report) },
+            onDismiss = {
+                app.voidfiles.CrashReporter.clear(context)
+                crashReport = null
+            },
+        )
+    }
     val update = vm.availableUpdate
     if (vm.showUpdateDialog && update != null) {
         UpdateDialog(update, onDismiss = { vm.showUpdateDialog = false }) { vm.downloadUpdate(update) }
@@ -406,7 +431,12 @@ private fun OpCard(op: OpState, onCancel: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Text(op.title, color = c.text, style = MaterialTheme.typography.titleMedium, maxLines = 1)
             if (op.file.isNotEmpty()) Label(op.file, color = c.textMuted)
-            if (op.total > 0) Label("${formatSize(op.done)} / ${formatSize(op.total)}")
+            val stats = buildList {
+                if (op.total > 0) add("${formatSize(op.done)} / ${formatSize(op.total)}") else if (op.done > 0) add(formatSize(op.done))
+                if (op.speed > 0) add("${formatSize(op.speed)}/s")
+                if (op.etaSeconds >= 0) add("noch ${formatDuration(op.etaSeconds)}")
+            }
+            if (stats.isNotEmpty()) Label(stats.joinToString(" · "))
         }
         TextButton(onClick = onCancel) { Text("ABBRECHEN", style = MaterialTheme.typography.labelLarge, color = c.accent) }
     }

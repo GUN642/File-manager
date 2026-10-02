@@ -42,6 +42,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AddToHomeScreen
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.LocationOff
+import androidx.compose.material.icons.outlined.Transform
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudUpload
@@ -331,6 +333,18 @@ private fun SelectionHeader(vm: MainViewModel, pane: Pane, launcher: Launcher, c
                     }
                     if (selected.any { !it.isDirectory }) {
                         MenuItem("In Tresor verschieben", Icons.Outlined.Lock) { more = false; onDialog(Dlg.MoveToVault(pane, selected)) }
+                    }
+                    val images = selected.filter { app.voidfiles.data.ImageTools.isImage(it) }
+                    if (images.isNotEmpty()) {
+                        MenuItem("Bild umwandeln / verkleinern", Icons.Outlined.Transform) {
+                            more = false; onDialog(Dlg.ImageConvert(pane, images))
+                        }
+                        MenuItem("Ohne Standort teilen", Icons.Outlined.Share) {
+                            more = false; vm.shareWithoutLocation(pane, images)
+                        }
+                        MenuItem("Standortdaten entfernen", Icons.Outlined.LocationOff) {
+                            more = false; onDialog(Dlg.StripLocation(pane, images))
+                        }
                     }
                     MenuItem("An Proton Drive senden", Icons.Outlined.CloudUpload) {
                         more = false; launcher.sendToProton(selected); vm.clearSelection(pane)
