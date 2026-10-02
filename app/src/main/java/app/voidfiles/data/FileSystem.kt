@@ -32,6 +32,9 @@ enum class ConflictPolicy { OVERWRITE, KEEP_BOTH, SKIP }
 class FileSystem(context: Context) {
     private val resolver: ContentResolver = context.contentResolver
 
+    /** Local names never get control characters – Android would block the folder afterwards. */
+    private fun safeName(name: String) = if (Names.hasInvalidChars(name)) Names.sanitize(name) else name
+
     // ---------------------------------------------------------------- local writes with EPERM recovery
 
     private fun isPermissionError(e: Throwable): Boolean {
@@ -195,7 +198,7 @@ class FileSystem(context: Context) {
 
     fun createDirectory(parent: Node, name: String): Node = when (parent) {
         is LocalNode -> {
-            val f = File(parent.file, name)
+            val f = File(parent.file, safeName(name))
             if (!f.exists() && !f.mkdirs()) throw IOException("Ordner \"$name\" konnte nicht erstellt werden")
             LocalNode.of(f)
         }
@@ -209,7 +212,7 @@ class FileSystem(context: Context) {
 
     fun createFile(parent: Node, name: String, mime: String = Node.mimeFromName(name)): Node = when (parent) {
         is LocalNode -> {
-            val f = File(parent.file, name)
+            val f = File(parent.file, safeName(name))
             createLocalFile(f)
             LocalNode.of(f)
         }
@@ -223,7 +226,7 @@ class FileSystem(context: Context) {
 
     fun rename(node: Node, newName: String): Node = when (node) {
         is LocalNode -> {
-            val target = File(node.file.parentFile, newName)
+            val target = File(node.file.parentFile, safeName(newName))
             if (target.exists()) throw IOException("\"$newName\" existiert bereits")
             if (!node.file.renameTo(target)) throw IOException("Umbenennen fehlgeschlagen")
             LocalNode.of(target)
@@ -340,7 +343,7 @@ class FileSystem(context: Context) {
         sink.onFile(src.name)
         try {
             if (src is LocalNode && destDir is LocalNode) {
-                val target = File(destDir.file, name)
+                val target = File(destDir.file, safeName(name))
                 try {
                     copyStream(FileInputStream(src.file), openLocalOutput(target), sink)
                 } catch (e: Throwable) {

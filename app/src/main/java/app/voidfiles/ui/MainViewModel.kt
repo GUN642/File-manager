@@ -27,6 +27,7 @@ import app.voidfiles.data.ArchiveListing
 import app.voidfiles.data.FileInfo
 import app.voidfiles.data.ImageJob
 import app.voidfiles.data.ImageTools
+import app.voidfiles.data.Names
 import app.voidfiles.data.Vault
 import app.voidfiles.data.VaultEntry
 import app.voidfiles.data.Archives
@@ -115,6 +116,9 @@ data class SearchState(
     val running: Boolean,
     val kind: ListKind = ListKind.SEARCH,
 )
+
+/** A target folder whose path contains characters Android refuses (e.g. a line break in a folder name). */
+class PendingRepair(val dest: LocalNode, val bad: List<File>, val retry: (Node) -> Unit)
 
 /** A copy/move waiting for the user to decide what happens with existing names. */
 data class PendingTransfer(val nodes: List<Node>, val dest: Node, val move: Boolean, val conflicts: List<String>)
@@ -578,7 +582,69 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         startTransfer(nodes, to.current, transferMove)
     }
 
+    // ------------------------------------------------------------------ broken folder names
+
+    var pendingRepair by mutableStateOf<PendingRepair?>(null)
+
+    /**
+     * Returns true when files can be created in [dest]. Otherwise asks the user to repair the folder names
+     * first; [retry] then runs again with the repaired folder.
+     */
+    private fun checkDest(dest: Node, retry: (Node) -> Unit): Boolean {
+        if (dest !is LocalNode) return true
+        val bad = Storage.chain(getApplication(), dest.file).drop(1).filter { Names.hasInvalidChars(it.name) }
+        if (bad.isEmpty()) return true
+        pendingRepair = PendingRepair(dest, bad, retry)
+        return false
+    }
+
+    fun repairAndRetry() {
+        val p = pendingRepair ?: return
+        pendingRepair = null
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { repairPath(p.dest.file) } }
+            result.onSuccess { (fixed, renames) ->
+                for (pane in listOf(left, right)) {
+                    val cur = pane.current as? LocalNode ?: continue
+                    var path = cur.file.absolutePath
+                    for ((old, new) in renames) {
+                        if (path == old || path.startsWith("$old/")) path = new + path.removePrefix(old)
+                    }
+                    pane.stack = Storage.chain(getApplication(), File(path)).map { LocalNode.of(it) }
+                    reload(pane)
+                }
+                message("Ordnername repariert")
+                p.retry(LocalNode.of(fixed))
+            }.onFailure { message("Reparatur fehlgeschlagen: ${it.message}") }
+        }
+    }
+
+    /** Renames every folder on the way to [file] whose name Android rejects. Returns the new path and the renames. */
+    private fun repairPath(file: File): Pair<File, List<Pair<String, String>>> {
+        val chain = Storage.chain(getApplication(), file)
+        val renames = ArrayList<Pair<String, String>>()
+        var cur = chain.first()
+        for (f in chain.drop(1)) {
+            val existing = File(cur, f.name)
+            if (Names.hasInvalidChars(f.name)) {
+                val clean = Names.sanitize(f.name)
+                var target = File(cur, clean)
+                var i = 1
+                while (target.exists()) target = File(cur, "$clean (${i++})")
+                if (!existing.renameTo(target)) {
+                    throw java.io.IOException("\"${Names.display(f.name)}\" konnte nicht umbenannt werden")
+                }
+                renames += existing.absolutePath to target.absolutePath
+                cur = target
+            } else {
+                cur = existing
+            }
+        }
+        return cur to renames
+    }
+
     private fun startTransfer(nodes: List<Node>, dest: Node, move: Boolean) {
+        if (!checkDest(dest) { fixed -> startTransfer(nodes, fixed, move) }) return
         viewModelScope.launch {
             val existing = withContext(Dispatchers.IO) {
                 runCatching { fs.list(dest).mapTo(HashSet()) { it.name } }.getOrDefault(emptySet())
@@ -644,13 +710,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------------ create / rename / delete
 
-    fun createFolder(pane: Pane, name: String) = simpleOp {
-        fs.createDirectory(pane.current, name.trim()); "Ordner erstellt"
+    fun createFolder(pane: Pane, name: String) {
+        if (!checkDest(pane.current) { createFolder(pane, name) }) return
+        simpleOp { fs.createDirectory(pane.current, name.trim()); "Ordner erstellt" }
     }
 
-    fun createFile(pane: Pane, name: String) = simpleOp {
+    fun createFile(pane: Pane, name: String) {
+        if (!checkDest(pane.current) { createFile(pane, name) }) return
+        simpleOp {
         if (fs.findChild(pane.current, name.trim()) != null) throw java.io.IOException("\"$name\" existiert bereits")
-        fs.createFile(pane.current, name.trim()); "Datei erstellt"
+            fs.createFile(pane.current, name.trim()); "Datei erstellt"
+        }
     }
 
     fun rename(pane: Pane, node: Node, newName: String) {
@@ -819,6 +889,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun extract(archive: Node, dest: Node, intoFolder: Boolean, password: String? = null) {
+        if (!checkDest(dest) { fixed -> extract(archive, fixed, intoFolder, password) }) return
         runOp("Entpacke ${archive.name}", measure = null) { sink ->
             val target = if (intoFolder) {
                 val folder = fs.uniqueName(dest, Archives.baseName(archive.name))
@@ -1334,6 +1405,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Saves the shared files into the folder shown in [pane], then calls [onDone]. */
     fun saveShare(pane: Pane, onDone: () -> Unit) {
         val items = incomingShare ?: return
+        if (!checkDest(pane.current) { saveShare(pane, onDone) }) return
         val dest = pane.current
         if (pane.search != null) {
             message("Bitte zuerst einen Ordner öffnen"); return

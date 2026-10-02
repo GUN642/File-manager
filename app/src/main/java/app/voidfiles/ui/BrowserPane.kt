@@ -231,7 +231,7 @@ private fun PaneHeader(
             pane.search != null -> "Suche"
             pane.stack.size == 1 && pane.current is LocalNode &&
                 (pane.current as LocalNode).file.absolutePath == Storage.primaryRoot.absolutePath -> "Intern"
-            else -> pane.current.name
+            else -> app.voidfiles.data.Names.display(pane.current.name)
         }
         Text(
             title.uppercase(),
@@ -280,7 +280,7 @@ private fun Breadcrumbs(vm: MainViewModel, pane: Pane) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         pane.stack.forEachIndexed { i, node ->
-            val label = if (i == 0 && node is LocalNode && node.file.absolutePath == Storage.primaryRoot.absolutePath) "Intern" else node.name
+            val label = if (i == 0 && node is LocalNode && node.file.absolutePath == Storage.primaryRoot.absolutePath) "Intern" else app.voidfiles.data.Names.display(node.name)
             val last = i == pane.stack.lastIndex
             Text(
                 label.uppercase(),
@@ -668,7 +668,7 @@ private fun FileRow(
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                node.name,
+                app.voidfiles.data.Names.display(node.name),
                 color = c.text,
                 style = MaterialTheme.typography.bodyLarge.copy(fontWeight = if (node.isDirectory) FontWeight.Medium else FontWeight.Normal),
                 maxLines = 1,
@@ -711,7 +711,7 @@ private fun GridItem(
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            node.name, color = c.text, style = MaterialTheme.typography.bodyMedium, maxLines = 2,
+            app.voidfiles.data.Names.display(node.name), color = c.text, style = MaterialTheme.typography.bodyMedium, maxLines = 2,
             overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
         )
         Text(

@@ -250,6 +250,17 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
         )
     }
     vm.pendingTransfer?.let { ConflictDialog(it) { policy -> vm.resolveConflict(policy) } }
+    vm.pendingRepair?.let { r ->
+        val names = r.bad.joinToString("\n") { "• " + it.name.replace("\n", "⏎").replace("\r", "⏎").replace("\t", "⇥") }
+        ConfirmDialog(
+            "Ordnername reparieren",
+            "Android lässt in diesem Ordner keine neuen Dateien zu, weil ein Ordnername auf dem Weg dorthin ein " +
+                "unzulässiges Zeichen enthält (⏎ = Zeilenumbruch):\n\n$names\n\n" +
+                "VOID Files kann den Namen bereinigen (z. B. Zeilenumbruch → Leerzeichen) und danach weitermachen.",
+            "Reparieren",
+            { vm.pendingRepair = null },
+        ) { vm.repairAndRetry() }
+    }
     vm.pendingPassword?.let { p ->
         PasswordDialog(p.archive.name, p.wrong, { vm.pendingPassword = null }) { pw ->
             vm.pendingPassword = null
