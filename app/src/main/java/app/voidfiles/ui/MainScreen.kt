@@ -83,6 +83,8 @@ fun MainScreen(vm: MainViewModel, settings: AppSettings) {
     val context = LocalContext.current
     val launcher = remember { Launcher(context.applicationContext) }
     val drawer = rememberDrawerState(DrawerValue.Closed)
+    // Opening the menu always shows the current list of drives.
+    LaunchedEffect(drawer.isOpen) { if (drawer.isOpen) vm.refreshVolumes() }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var dlg by remember { mutableStateOf<Dlg?>(null) }

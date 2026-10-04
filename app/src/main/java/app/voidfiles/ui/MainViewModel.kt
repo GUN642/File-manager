@@ -5,6 +5,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Build
+import android.os.storage.StorageManager
+import android.os.storage.StorageVolume
+import kotlinx.coroutines.isActive
 import androidx.core.content.ContextCompat
 import app.voidfiles.data.StorageVolumeInfo
 import android.net.Uri
@@ -262,6 +266,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Set by the activity; volume polling only runs while the app is visible. */
+    var inForeground = false
+
+    private var volumeCallback: Any? = null
+
     init {
         // Keep the storage list up to date when SD cards or USB drives come and go.
         val filter = IntentFilter().apply {
@@ -273,10 +282,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             addDataScheme("file")
         }
         ContextCompat.registerReceiver(app, mediaReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+
+        // The media broadcasts are not delivered reliably on every device; the volume callback is the
+        // official way on Android 11+.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                val sm = app.getSystemService(StorageManager::class.java)
+                val cb = object : StorageManager.StorageVolumeCallback() {
+                    override fun onStateChanged(volume: StorageVolume) {
+                        viewModelScope.launch {
+                            kotlinx.coroutines.delay(400)
+                            refreshVolumes()
+                        }
+                    }
+                }
+                sm.registerStorageVolumeCallback(ContextCompat.getMainExecutor(app), cb)
+                volumeCallback = cb
+            }
+        }
+
+        // Last line of defence: re-check every few seconds while the app is on screen (cheap system call).
+        viewModelScope.launch {
+            while (isActive) {
+                kotlinx.coroutines.delay(3000)
+                if (inForeground) refreshVolumes()
+            }
+        }
     }
 
     override fun onCleared() {
         runCatching { getApplication<Application>().unregisterReceiver(mediaReceiver) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            (volumeCallback as? StorageManager.StorageVolumeCallback)?.let { cb ->
+                runCatching { getApplication<Application>().getSystemService(StorageManager::class.java).unregisterStorageVolumeCallback(cb) }
+            }
+        }
         super.onCleared()
     }
 

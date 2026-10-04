@@ -71,8 +71,14 @@ class MainActivity : FragmentActivity() {
         vm.handleIntent(intent)
     }
 
+    override fun onStart() {
+        super.onStart()
+        vm.inForeground = true
+    }
+
     override fun onStop() {
         super.onStop()
+        vm.inForeground = false
         // The vault locks as soon as the app leaves the screen.
         if (!isChangingConfigurations) vm.lockVault()
     }
