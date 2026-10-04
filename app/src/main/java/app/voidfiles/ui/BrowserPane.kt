@@ -40,7 +40,10 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AddToHomeScreen
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.LocationOff
 import androidx.compose.material.icons.outlined.Transform
@@ -122,6 +125,9 @@ fun BrowserPane(
     onMenu: (() -> Unit)?,
     onDialog: (Dlg) -> Unit,
     modifier: Modifier = Modifier,
+    /** The other window in the swipeable portrait layout – enables the arrow buttons. */
+    transferTarget: Pane? = null,
+    targetLabel: String = "",
 ) {
     val c = VoidTheme.colors
     Column(
@@ -135,7 +141,7 @@ fun BrowserPane(
             },
     ) {
         if (pane.selection.isNotEmpty()) {
-            SelectionHeader(vm, pane, launcher, compact, onDialog)
+            SelectionHeader(vm, pane, launcher, compact, onDialog, transferTarget, targetLabel)
         } else {
             PaneHeader(vm, pane, settings, active, compact, launcher, onMenu, onDialog)
         }
@@ -295,7 +301,15 @@ private fun Breadcrumbs(vm: MainViewModel, pane: Pane) {
 }
 
 @Composable
-private fun SelectionHeader(vm: MainViewModel, pane: Pane, launcher: Launcher, compact: Boolean, onDialog: (Dlg) -> Unit) {
+private fun SelectionHeader(
+    vm: MainViewModel,
+    pane: Pane,
+    launcher: Launcher,
+    compact: Boolean,
+    onDialog: (Dlg) -> Unit,
+    transferTarget: Pane? = null,
+    targetLabel: String = "",
+) {
     val c = VoidTheme.colors
     val selected = pane.selectedNodes
     val single = selected.singleOrNull()
@@ -356,6 +370,16 @@ private fun SelectionHeader(vm: MainViewModel, pane: Pane, launcher: Launcher, c
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
+            if (transferTarget != null) {
+                // Arrows straight into the other window – like the centre strip in landscape.
+                val arrow = if (targetLabel == "1") Icons.AutoMirrored.Outlined.ArrowBack else Icons.AutoMirrored.Outlined.ArrowForward
+                ActionButton("Kopie → $targetLabel", arrow, highlight = true) {
+                    vm.transfer(pane, transferTarget, move = false)
+                }
+                ActionButton("Versch. → $targetLabel", Icons.Outlined.DriveFileMove, highlight = true) {
+                    vm.transfer(pane, transferTarget, move = true)
+                }
+            }
             ActionButton("Kopieren", Icons.Outlined.ContentCopy) { vm.copyToClipboard(pane, cut = false) }
             ActionButton("Ausschn.", Icons.Outlined.ContentCut) { vm.copyToClipboard(pane, cut = true) }
             ActionButton("Löschen", Icons.Outlined.Delete) { onDialog(Dlg.Delete(pane, selected)) }
@@ -370,16 +394,16 @@ private fun SelectionHeader(vm: MainViewModel, pane: Pane, launcher: Launcher, c
 }
 
 @Composable
-private fun ActionButton(label: String, icon: ImageVector, onClick: () -> Unit) {
+private fun ActionButton(label: String, icon: ImageVector, highlight: Boolean = false, onClick: () -> Unit) {
     val c = VoidTheme.colors
     Column(
         Modifier.clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(
-            Modifier.size(42.dp).clip(CircleShape).background(c.surfaceHigh),
+            Modifier.size(42.dp).clip(CircleShape).background(if (highlight) c.accent else c.surfaceHigh),
             contentAlignment = Alignment.Center,
-        ) { Icon(icon, label, tint = c.text, modifier = Modifier.size(20.dp)) }
+        ) { Icon(icon, label, tint = if (highlight) c.onAccent else c.text, modifier = Modifier.size(20.dp)) }
         Spacer(Modifier.height(4.dp))
         Text(label.uppercase(), style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp), color = c.textMuted)
     }

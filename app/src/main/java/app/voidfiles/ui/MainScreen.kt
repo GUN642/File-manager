@@ -14,6 +14,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -325,6 +327,8 @@ private fun FilesLayout(
                     modifier = Modifier.weight(1f).fillMaxHeight(),
                 )
             }
+        } else if (settings.dualPortrait) {
+            PortraitPanes(vm, settings, launcher, onMenu, onDialog)
         } else {
             BrowserPane(
                 vm, vm.active, settings, active = true, compact = false, launcher = launcher,
@@ -404,6 +408,56 @@ private fun ShareBar(vm: MainViewModel, items: List<SharedItem>) {
                 Icon(Icons.Outlined.SaveAlt, null, tint = c.accent, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("HIER SPEICHERN", style = MaterialTheme.typography.labelLarge, color = c.accent)
+            }
+        }
+    }
+}
+
+/**
+ * Portrait: both windows side by side in a pager – swipe sideways to switch. File rows keep their own
+ * swipe (delete/select), so switching works everywhere except directly on a file.
+ */
+@Composable
+private fun PortraitPanes(
+    vm: MainViewModel,
+    settings: AppSettings,
+    launcher: Launcher,
+    onMenu: () -> Unit,
+    onDialog: (Dlg) -> Unit,
+) {
+    val c = VoidTheme.colors
+    val pager = rememberPagerState(initialPage = if (vm.activeIsLeft) 0 else 1) { 2 }
+    // Pager → view model
+    LaunchedEffect(pager.currentPage) { vm.activeIsLeft = pager.currentPage == 0 }
+    // View model → pager (e.g. after rotating back from landscape)
+    LaunchedEffect(vm.activeIsLeft) {
+        val target = if (vm.activeIsLeft) 0 else 1
+        if (pager.currentPage != target) pager.animateScrollToPage(target)
+    }
+    Box(Modifier.fillMaxSize()) {
+        HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
+            val pane = if (page == 0) vm.left else vm.right
+            val other = if (page == 0) vm.right else vm.left
+            BrowserPane(
+                vm, pane, settings, active = true, compact = false, launcher = launcher,
+                onActivate = {}, onMenu = onMenu, onDialog = onDialog,
+                modifier = Modifier.fillMaxSize(),
+                transferTarget = other,
+                targetLabel = if (page == 0) "2" else "1",
+            )
+        }
+        // Window indicator: two dots, the active one in the accent colour.
+        Row(
+            Modifier.align(Alignment.TopCenter).padding(top = 22.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            for (i in 0..1) {
+                val selected = pager.currentPage == i
+                Box(
+                    Modifier.size(if (selected) 9.dp else 7.dp).clip(CircleShape)
+                        .background(if (selected) c.accent else c.textMuted.copy(alpha = 0.4f)),
+                )
             }
         }
     }

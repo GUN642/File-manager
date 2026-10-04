@@ -63,6 +63,7 @@ data class AppSettings(
     val autoUpdateCheck: Boolean = true,
     val internalViewer: Boolean = true,
     val swipeGestures: Boolean = true,
+    val dualPortrait: Boolean = true,
     /** Ordered folder paths shown under "Schnellzugriff". */
     val quickAccess: List<String> = emptyList(),
     val cloudRoots: List<CloudRoot> = emptyList(),
@@ -88,6 +89,7 @@ class SettingsRepository(private val context: Context) {
         val autoUpdate = booleanPreferencesKey("auto_update")
         val internalViewer = booleanPreferencesKey("internal_viewer")
         val swipe = booleanPreferencesKey("swipe_gestures")
+        val dualPortrait = booleanPreferencesKey("dual_portrait")
         val bookmarks = stringSetPreferencesKey("bookmarks")
         val quickAccess = stringPreferencesKey("quick_access")
         val cloudRoots = stringSetPreferencesKey("cloud_roots")
@@ -115,6 +117,7 @@ class SettingsRepository(private val context: Context) {
             autoUpdateCheck = p[K.autoUpdate] ?: d.autoUpdateCheck,
             internalViewer = p[K.internalViewer] ?: d.internalViewer,
             swipeGestures = p[K.swipe] ?: d.swipeGestures,
+            dualPortrait = p[K.dualPortrait] ?: d.dualPortrait,
             quickAccess = p[K.quickAccess]?.split('\n')?.filter { it.isNotBlank() }
                 ?: (Storage.defaultQuickPaths() + (p[K.bookmarks] ?: emptySet()).sorted()).distinct(),
             cloudRoots = (p[K.cloudRoots] ?: emptySet()).mapNotNull { CloudRoot.decode(it) }.sortedBy { it.label.lowercase() },
@@ -139,6 +142,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun setAutoUpdate(v: Boolean) = context.dataStore.edit { it[K.autoUpdate] = v }
     suspend fun setInternalViewer(v: Boolean) = context.dataStore.edit { it[K.internalViewer] = v }
     suspend fun setSwipeGestures(v: Boolean) = context.dataStore.edit { it[K.swipe] = v }
+    suspend fun setDualPortrait(v: Boolean) = context.dataStore.edit { it[K.dualPortrait] = v }
 
     private fun Preferences.quickList(): List<String> = this[K.quickAccess]?.split('\n')?.filter { it.isNotBlank() }
         ?: (Storage.defaultQuickPaths() + (this[K.bookmarks] ?: emptySet()).sorted()).distinct()

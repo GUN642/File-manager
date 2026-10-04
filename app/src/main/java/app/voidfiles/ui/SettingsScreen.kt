@@ -126,8 +126,11 @@ fun SettingsScreen(vm: MainViewModel, s: AppSettings, onBack: () -> Unit) {
             }
             Toggle("Papierkorb verwenden", "Gelöschte Dateien zuerst in den Papierkorb", s.useTrash) { v -> vm.update { setUseTrash(v) } }
 
-            Group("Querformat")
-            Toggle("Zwei Fenster", "Im Querformat zwei Ordner nebeneinander mit Pfeil-Übertragung", s.dualPaneLandscape) { v ->
+            Group("Zwei Fenster")
+            Toggle("Hochformat: zweites Fenster", "Zur Seite wischen wechselt zwischen zwei Fenstern; ausgewählte Dateien per Pfeil ins andere Fenster kopieren/verschieben", s.dualPortrait) { v ->
+                vm.update { setDualPortrait(v) }
+            }
+            Toggle("Querformat: nebeneinander", "Im Querformat zwei Ordner nebeneinander mit Pfeil-Übertragung", s.dualPaneLandscape) { v ->
                 vm.update { setDualPane(v) }
             }
 

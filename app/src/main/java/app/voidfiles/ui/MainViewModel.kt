@@ -608,7 +608,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Dual-pane arrow: send the selection of [from] into the folder shown in [to]. */
-    fun transfer(from: Pane, to: Pane) {
+    fun transfer(from: Pane, to: Pane, move: Boolean = transferMove) {
         val nodes = from.selectedNodes
         if (nodes.isEmpty()) {
             message("Zuerst Dateien auswählen (lange drücken)")
@@ -619,7 +619,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         from.selection = emptySet()
-        startTransfer(nodes, to.current, transferMove)
+        startTransfer(nodes, to.current, move)
     }
 
     // ------------------------------------------------------------------ broken folder names
